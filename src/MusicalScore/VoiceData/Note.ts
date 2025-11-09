@@ -14,8 +14,6 @@ import {NoteType} from "./NoteType";
 import { SourceMeasure } from "./SourceMeasure";
 import { TechnicalInstruction } from "./Instructions";
 import { Glissando } from "../../MusicalScore/VoiceData/Glissando";
-import { MultiTempoExpression } from "./Expressions/MultiTempoExpression";
-import { MusicSheet } from "../MusicSheet";
 
 /**
  * Represents a single pitch with a duration (length)
@@ -309,53 +307,6 @@ export class Note {
     }
     public hasTabEffects(): boolean {
         return false; // override in TabNote
-    }
-
-    public getNoteBpm(): number | undefined {
-        const musicSheet: MusicSheet = this.ParentStaff.ParentInstrument.GetMusicSheet;
-        const absoluteTimestamp: Fraction = this.getAbsoluteTimestamp();
-        const tempoExpressions: MultiTempoExpression[] = musicSheet.TimestampSortedTempoExpressionsList;
-
-        if (tempoExpressions.length === 0) {
-            return musicSheet.userStartTempoInBPM || undefined;
-        }
-
-        const defaultTempo: number = musicSheet.getExpressionsStartTempoInBPM();
-        if (defaultTempo === undefined || defaultTempo === 0) {
-            return undefined;
-        }
-
-        let activeTempo: number | undefined = defaultTempo;
-        let activeTempoExpr: MultiTempoExpression | null = null;
-
-        for (let i: number = 0; i < tempoExpressions.length; i++) {
-            const tempoExpr: MultiTempoExpression = tempoExpressions[i];
-            const exprTimestamp: Fraction = tempoExpr.AbsoluteTimestamp;
-
-            if (exprTimestamp.gt(absoluteTimestamp)) {
-                break;
-            }
-
-            if (tempoExpr.InstantaneousTempo) {
-                activeTempo = tempoExpr.InstantaneousTempo.TempoInBpm;
-                activeTempoExpr = null;
-            } else if (tempoExpr.ContinuousTempo) {
-                activeTempoExpr = tempoExpr;
-                activeTempo = tempoExpr.ContinuousTempo.StartTempo;
-            }
-        }
-
-        if (activeTempoExpr && activeTempoExpr.ContinuousTempo) {
-            const endTimestamp: Fraction = activeTempoExpr.ContinuousTempo.AbsoluteEndTimestamp;
-            if (endTimestamp && absoluteTimestamp.lte(endTimestamp)) {
-                const interpolatedTempo: number = activeTempoExpr.ContinuousTempo.getInterpolatedTempo(absoluteTimestamp);
-                if (interpolatedTempo > 0) {
-                    return interpolatedTempo;
-                }
-            }
-        }
-
-        return activeTempo;
     }
 }
 
