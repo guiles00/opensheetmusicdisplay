@@ -193,8 +193,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     private hoverHandler?: (event: MouseEvent) => void;
     private clickHandler?: (event: MouseEvent) => void;
     private mouseLeaveHandler?: (event: MouseEvent) => void;
-    private clickOverlayRect?: SVGRectElement;
-    private hoverOverlayRect?: SVGRectElement;
+    private interactionOverlayRect?: SVGRectElement; // Shared overlay for both hover and click
 
     public setHoverHandler(handler: (event: MouseEvent) => void): void {
         const svgElement: SVGGElement = this.getSVGGElement();
@@ -204,7 +203,21 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         this.removeHoverHandler();
         this.hoverHandler = handler;
 
-        // Create hover overlay using the same approach as click handler for consistency
+        // Use shared interaction overlay if it exists (created by click handler)
+        if (this.interactionOverlayRect) {
+            this.interactionOverlayRect.addEventListener("mouseenter", this.hoverHandler);
+            this.interactionOverlayRect.addEventListener("mousemove", this.hoverHandler);
+            this.mouseLeaveHandler = (event: MouseEvent): void => {
+                // Call the handler with mouseleave event so tooltip can be hidden
+                // The handler should manage its own hide logic, but we pass the event
+                handler(event);
+            };
+            this.interactionOverlayRect.addEventListener("mouseleave", this.mouseLeaveHandler);
+            this.interactionOverlayRect.style.cursor = "pointer";
+            return;
+        }
+
+        // Create hover overlay if no shared overlay exists
         const staffEntryBBox: BoundingBox = this.parentVoiceEntry.parentStaffEntry.PositionAndShape;
         if (staffEntryBBox) {
             staffEntryBBox.calculateAbsolutePosition();
@@ -231,27 +244,28 @@ export class VexFlowGraphicalNote extends GraphicalNote {
                 const height: number = heightOSMD * unitInPixels;
 
                 if (width > 0 && height > 0) {
-                    // Create hover overlay rectangle
-                    this.hoverOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                    this.hoverOverlayRect.setAttribute("x", left.toString());
-                    this.hoverOverlayRect.setAttribute("y", top.toString());
-                    this.hoverOverlayRect.setAttribute("width", width.toString());
-                    this.hoverOverlayRect.setAttribute("height", height.toString());
-                    this.hoverOverlayRect.setAttribute("fill", "transparent");
-                    this.hoverOverlayRect.setAttribute("stroke", "none");
-                    this.hoverOverlayRect.setAttribute("pointer-events", "all");
-                    this.hoverOverlayRect.style.cursor = "pointer";
-                    this.hoverOverlayRect.setAttribute("class", "osmd-note-hover-overlay");
+                    // Create shared interaction overlay rectangle
+                    this.interactionOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    this.interactionOverlayRect.setAttribute("x", left.toString());
+                    this.interactionOverlayRect.setAttribute("y", top.toString());
+                    this.interactionOverlayRect.setAttribute("width", width.toString());
+                    this.interactionOverlayRect.setAttribute("height", height.toString());
+                    this.interactionOverlayRect.setAttribute("fill", "transparent");
+                    this.interactionOverlayRect.setAttribute("stroke", "none");
+                    this.interactionOverlayRect.setAttribute("pointer-events", "all");
+                    this.interactionOverlayRect.style.cursor = "pointer";
+                    this.interactionOverlayRect.setAttribute("class", "osmd-note-interaction-overlay");
 
-                    svgRoot.appendChild(this.hoverOverlayRect);
+                    svgRoot.appendChild(this.interactionOverlayRect);
 
                     // Attach hover handlers to overlay
-                    this.hoverOverlayRect.addEventListener("mouseenter", this.hoverHandler);
-                    this.hoverOverlayRect.addEventListener("mousemove", this.hoverHandler);
-                    this.mouseLeaveHandler = (): void => {
-                        // Handler can manage its own hide logic
+                    this.interactionOverlayRect.addEventListener("mouseenter", this.hoverHandler);
+                    this.interactionOverlayRect.addEventListener("mousemove", this.hoverHandler);
+                    this.mouseLeaveHandler = (event: MouseEvent): void => {
+                        // Call the handler with mouseleave event so tooltip can be hidden
+                        handler(event);
                     };
-                    this.hoverOverlayRect.addEventListener("mouseleave", this.mouseLeaveHandler);
+                    this.interactionOverlayRect.addEventListener("mouseleave", this.mouseLeaveHandler);
                     return;
                 }
             }
@@ -261,24 +275,25 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         svgElement.style.cursor = "pointer";
         svgElement.addEventListener("mouseenter", this.hoverHandler);
         svgElement.addEventListener("mousemove", this.hoverHandler);
-        this.mouseLeaveHandler = (): void => {
-            // Handler can manage its own hide logic
+        this.mouseLeaveHandler = (event: MouseEvent): void => {
+            // Call the handler with mouseleave event so tooltip can be hidden
+            handler(event);
         };
         svgElement.addEventListener("mouseleave", this.mouseLeaveHandler);
     }
 
     public removeHoverHandler(): void {
-        // Remove hover overlay rectangle if it exists
-        if (this.hoverOverlayRect) {
-            if (this.hoverHandler) {
-                this.hoverOverlayRect.removeEventListener("mouseenter", this.hoverHandler);
-                this.hoverOverlayRect.removeEventListener("mousemove", this.hoverHandler);
-            }
+        // Remove hover handlers from shared interaction overlay if it exists
+        if (this.interactionOverlayRect && this.hoverHandler) {
+            this.interactionOverlayRect.removeEventListener("mouseenter", this.hoverHandler);
+            this.interactionOverlayRect.removeEventListener("mousemove", this.hoverHandler);
             if (this.mouseLeaveHandler) {
-                this.hoverOverlayRect.removeEventListener("mouseleave", this.mouseLeaveHandler);
+                this.interactionOverlayRect.removeEventListener("mouseleave", this.mouseLeaveHandler);
             }
-            this.hoverOverlayRect.remove();
-            this.hoverOverlayRect = undefined;
+            // Only remove cursor style if no click handler
+            if (!this.clickHandler) {
+                this.interactionOverlayRect.style.cursor = "";
+            }
         }
 
         // Also remove from the original SVG element as fallback
@@ -340,24 +355,25 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
                 // Only create overlay if dimensions are valid
                 if (width > 0 && height > 0) {
-                    // Create an invisible rectangle overlay
-                    this.clickOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                    this.clickOverlayRect.setAttribute("x", left.toString());
-                    this.clickOverlayRect.setAttribute("y", top.toString());
-                    this.clickOverlayRect.setAttribute("width", width.toString());
-                    this.clickOverlayRect.setAttribute("height", height.toString());
-                    this.clickOverlayRect.setAttribute("fill", "transparent");
-                    this.clickOverlayRect.setAttribute("stroke", "none");
-                    this.clickOverlayRect.setAttribute("pointer-events", "all");
-                    this.clickOverlayRect.style.cursor = "pointer";
-                    // Add a class for potential debugging
-                    this.clickOverlayRect.setAttribute("class", "osmd-note-click-overlay");
+                    // Create or reuse shared interaction overlay rectangle
+                    if (!this.interactionOverlayRect) {
+                        this.interactionOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                        this.interactionOverlayRect.setAttribute("x", left.toString());
+                        this.interactionOverlayRect.setAttribute("y", top.toString());
+                        this.interactionOverlayRect.setAttribute("width", width.toString());
+                        this.interactionOverlayRect.setAttribute("height", height.toString());
+                        this.interactionOverlayRect.setAttribute("fill", "transparent");
+                        this.interactionOverlayRect.setAttribute("stroke", "none");
+                        this.interactionOverlayRect.setAttribute("pointer-events", "all");
+                        this.interactionOverlayRect.style.cursor = "pointer";
+                        this.interactionOverlayRect.setAttribute("class", "osmd-note-interaction-overlay");
 
                     // Insert the overlay at the end of the SVG so it's on top (SVG uses document order for layering)
-                    svgRoot.appendChild(this.clickOverlayRect);
+                        svgRoot.appendChild(this.interactionOverlayRect);
+                    }
 
-                    // Attach click handler to the overlay
-                    this.clickOverlayRect.addEventListener("click", this.clickHandler);
+                    // Attach click handler to the shared overlay
+                    this.interactionOverlayRect.addEventListener("click", this.clickHandler);
                 } else {
                     // Fallback to original behavior if bounding box is invalid
                     svgElement.addEventListener("click", this.clickHandler);
@@ -376,13 +392,17 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     }
 
     public removeClickHandler(): void {
-        // Remove the overlay rectangle if it exists
-        if (this.clickOverlayRect) {
-            if (this.clickHandler) {
-                this.clickOverlayRect.removeEventListener("click", this.clickHandler);
+        // Remove click handler from shared interaction overlay if it exists
+        if (this.interactionOverlayRect && this.clickHandler) {
+            this.interactionOverlayRect.removeEventListener("click", this.clickHandler);
+            // Only remove overlay if no hover handler is using it
+            if (!this.hoverHandler) {
+                this.interactionOverlayRect.remove();
+                this.interactionOverlayRect = undefined;
+            } else {
+                // Keep overlay but remove cursor style if no click handler
+                this.interactionOverlayRect.style.cursor = "";
             }
-            this.clickOverlayRect.remove();
-            this.clickOverlayRect = undefined;
         }
 
         // Also remove from the original SVG element as fallback
