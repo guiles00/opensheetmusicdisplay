@@ -194,6 +194,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     private clickHandler?: (event: MouseEvent) => void;
     private mouseLeaveHandler?: (event: MouseEvent) => void;
     private clickOverlayRect?: SVGRectElement;
+    private hoverOverlayRect?: SVGRectElement;
 
     public setHoverHandler(handler: (event: MouseEvent) => void): void {
         const svgElement: SVGGElement = this.getSVGGElement();
@@ -202,6 +203,61 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
         this.removeHoverHandler();
         this.hoverHandler = handler;
+
+        // Create hover overlay using the same approach as click handler for consistency
+        const staffEntryBBox: BoundingBox = this.parentVoiceEntry.parentStaffEntry.PositionAndShape;
+        if (staffEntryBBox) {
+            staffEntryBBox.calculateAbsolutePosition();
+
+            let svgRoot: SVGSVGElement = svgElement.ownerSVGElement;
+            if (!svgRoot) {
+                let parent: Node = svgElement.parentNode;
+                while (parent && parent.nodeName !== "svg") {
+                    parent = parent.parentNode;
+                }
+                svgRoot = parent as SVGSVGElement;
+            }
+
+            if (svgRoot) {
+                const padding: number = 1.0;
+                const leftOSMD: number = staffEntryBBox.AbsolutePosition.x + staffEntryBBox.BorderLeft - padding;
+                const topOSMD: number = staffEntryBBox.AbsolutePosition.y + staffEntryBBox.BorderTop - padding;
+                const widthOSMD: number = (staffEntryBBox.BorderRight - staffEntryBBox.BorderLeft) + (padding * 2);
+                const heightOSMD: number = (staffEntryBBox.BorderBottom - staffEntryBBox.BorderTop) + (padding * 2);
+
+                const left: number = leftOSMD * unitInPixels;
+                const top: number = topOSMD * unitInPixels;
+                const width: number = widthOSMD * unitInPixels;
+                const height: number = heightOSMD * unitInPixels;
+
+                if (width > 0 && height > 0) {
+                    // Create hover overlay rectangle
+                    this.hoverOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    this.hoverOverlayRect.setAttribute("x", left.toString());
+                    this.hoverOverlayRect.setAttribute("y", top.toString());
+                    this.hoverOverlayRect.setAttribute("width", width.toString());
+                    this.hoverOverlayRect.setAttribute("height", height.toString());
+                    this.hoverOverlayRect.setAttribute("fill", "transparent");
+                    this.hoverOverlayRect.setAttribute("stroke", "none");
+                    this.hoverOverlayRect.setAttribute("pointer-events", "all");
+                    this.hoverOverlayRect.style.cursor = "pointer";
+                    this.hoverOverlayRect.setAttribute("class", "osmd-note-hover-overlay");
+
+                    svgRoot.appendChild(this.hoverOverlayRect);
+
+                    // Attach hover handlers to overlay
+                    this.hoverOverlayRect.addEventListener("mouseenter", this.hoverHandler);
+                    this.hoverOverlayRect.addEventListener("mousemove", this.hoverHandler);
+                    this.mouseLeaveHandler = (): void => {
+                        // Handler can manage its own hide logic
+                    };
+                    this.hoverOverlayRect.addEventListener("mouseleave", this.mouseLeaveHandler);
+                    return;
+                }
+            }
+        }
+
+        // Fallback to original behavior
         svgElement.style.cursor = "pointer";
         svgElement.addEventListener("mouseenter", this.hoverHandler);
         svgElement.addEventListener("mousemove", this.hoverHandler);
@@ -212,16 +268,31 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     }
 
     public removeHoverHandler(): void {
+        // Remove hover overlay rectangle if it exists
+        if (this.hoverOverlayRect) {
+            if (this.hoverHandler) {
+                this.hoverOverlayRect.removeEventListener("mouseenter", this.hoverHandler);
+                this.hoverOverlayRect.removeEventListener("mousemove", this.hoverHandler);
+            }
+            if (this.mouseLeaveHandler) {
+                this.hoverOverlayRect.removeEventListener("mouseleave", this.mouseLeaveHandler);
+            }
+            this.hoverOverlayRect.remove();
+            this.hoverOverlayRect = undefined;
+        }
+
+        // Also remove from the original SVG element as fallback
         const svgElement: SVGGElement = this.getSVGGElement();
-        if (!svgElement || !this.hoverHandler) {
-            return;
+        if (svgElement && this.hoverHandler) {
+            svgElement.removeEventListener("mouseenter", this.hoverHandler);
+            svgElement.removeEventListener("mousemove", this.hoverHandler);
+            if (this.mouseLeaveHandler) {
+                svgElement.removeEventListener("mouseleave", this.mouseLeaveHandler);
+            }
+            if (!this.clickHandler) {
+                svgElement.style.cursor = "";
+            }
         }
-        svgElement.removeEventListener("mouseenter", this.hoverHandler);
-        svgElement.removeEventListener("mousemove", this.hoverHandler);
-        if (this.mouseLeaveHandler) {
-            svgElement.removeEventListener("mouseleave", this.mouseLeaveHandler);
-        }
-        svgElement.style.cursor = "";
         this.hoverHandler = undefined;
         this.mouseLeaveHandler = undefined;
     }
