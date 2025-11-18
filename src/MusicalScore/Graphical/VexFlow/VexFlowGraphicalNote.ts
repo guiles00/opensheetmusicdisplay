@@ -11,6 +11,8 @@ import { GraphicalVoiceEntry } from "../GraphicalVoiceEntry";
 import { KeyInstruction } from "../../VoiceData/Instructions/KeyInstruction";
 import { EngravingRules } from "../EngravingRules";
 import { VexFlowMultiRestMeasure } from "./VexFlowMultiRestMeasure";
+import { unitInPixels } from "./VexFlowMusicSheetDrawer";
+import { BoundingBox } from "../BoundingBox";
 
 /**
  * The VexFlow version of a [[GraphicalNote]].
@@ -191,6 +193,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     private hoverHandler?: (event: MouseEvent) => void;
     private clickHandler?: (event: MouseEvent) => void;
     private mouseLeaveHandler?: (event: MouseEvent) => void;
+    private clickOverlayRect?: SVGRectElement;
 
     public setHoverHandler(handler: (event: MouseEvent) => void): void {
         const svgElement: SVGGElement = this.getSVGGElement();
@@ -230,18 +233,94 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
         this.removeClickHandler();
         this.clickHandler = handler;
-        svgElement.addEventListener("click", this.clickHandler);
-        svgElement.style.cursor = "pointer";
+
+        // Create an invisible overlay rectangle using the parent StaffEntry's bounding box
+        // This makes the click area larger and easier to interact with (StaffEntry is larger than VoiceEntry)
+        const staffEntryBBox: BoundingBox = this.parentVoiceEntry.parentStaffEntry.PositionAndShape;
+        if (staffEntryBBox) {
+            // Ensure absolute positions are calculated
+            staffEntryBBox.calculateAbsolutePosition();
+
+            // Get the SVG root element (usually the parent of the note's SVG group)
+            let svgRoot: SVGSVGElement = svgElement.ownerSVGElement;
+            if (!svgRoot) {
+                // Fallback: find the SVG root by traversing up the DOM
+                let parent: Node = svgElement.parentNode;
+                while (parent && parent.nodeName !== "svg") {
+                    parent = parent.parentNode;
+                }
+                svgRoot = parent as SVGSVGElement;
+            }
+
+            if (svgRoot) {
+                // Calculate the bounding box dimensions in OSMD units using StaffEntry (larger than VoiceEntry)
+                // Add padding to make the click area larger and easier to interact with
+                const padding: number = 1.0; // Padding in OSMD units (will be 10 pixels)
+                const leftOSMD: number = staffEntryBBox.AbsolutePosition.x + staffEntryBBox.BorderLeft - padding;
+                const topOSMD: number = staffEntryBBox.AbsolutePosition.y + staffEntryBBox.BorderTop - padding;
+                const widthOSMD: number = (staffEntryBBox.BorderRight - staffEntryBBox.BorderLeft) + (padding * 2);
+                const heightOSMD: number = (staffEntryBBox.BorderBottom - staffEntryBBox.BorderTop) + (padding * 2);
+
+                // Convert OSMD units to SVG pixels (1 OSMD unit = unitInPixels pixels)
+                const left: number = leftOSMD * unitInPixels;
+                const top: number = topOSMD * unitInPixels;
+                const width: number = widthOSMD * unitInPixels;
+                const height: number = heightOSMD * unitInPixels;
+
+                // Only create overlay if dimensions are valid
+                if (width > 0 && height > 0) {
+                    // Create an invisible rectangle overlay
+                    this.clickOverlayRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    this.clickOverlayRect.setAttribute("x", left.toString());
+                    this.clickOverlayRect.setAttribute("y", top.toString());
+                    this.clickOverlayRect.setAttribute("width", width.toString());
+                    this.clickOverlayRect.setAttribute("height", height.toString());
+                    this.clickOverlayRect.setAttribute("fill", "transparent");
+                    this.clickOverlayRect.setAttribute("stroke", "none");
+                    this.clickOverlayRect.setAttribute("pointer-events", "all");
+                    this.clickOverlayRect.style.cursor = "pointer";
+                    // Add a class for potential debugging
+                    this.clickOverlayRect.setAttribute("class", "osmd-note-click-overlay");
+
+                    // Insert the overlay at the end of the SVG so it's on top (SVG uses document order for layering)
+                    svgRoot.appendChild(this.clickOverlayRect);
+
+                    // Attach click handler to the overlay
+                    this.clickOverlayRect.addEventListener("click", this.clickHandler);
+                } else {
+                    // Fallback to original behavior if bounding box is invalid
+                    svgElement.addEventListener("click", this.clickHandler);
+                    svgElement.style.cursor = "pointer";
+                }
+            } else {
+                // Fallback to original behavior if we can't find SVG root
+                svgElement.addEventListener("click", this.clickHandler);
+                svgElement.style.cursor = "pointer";
+            }
+        } else {
+        // Fallback to original behavior if no StaffEntry bounding box
+            svgElement.addEventListener("click", this.clickHandler);
+            svgElement.style.cursor = "pointer";
+        }
     }
 
     public removeClickHandler(): void {
-        const svgElement: SVGGElement = this.getSVGGElement();
-        if (!svgElement || !this.clickHandler) {
-            return;
+        // Remove the overlay rectangle if it exists
+        if (this.clickOverlayRect) {
+            if (this.clickHandler) {
+                this.clickOverlayRect.removeEventListener("click", this.clickHandler);
+            }
+            this.clickOverlayRect.remove();
+            this.clickOverlayRect = undefined;
         }
-        svgElement.removeEventListener("click", this.clickHandler);
-        if (!this.hoverHandler) {
-            svgElement.style.cursor = "";
+
+        // Also remove from the original SVG element as fallback
+        const svgElement: SVGGElement = this.getSVGGElement();
+        if (svgElement && this.clickHandler) {
+            svgElement.removeEventListener("click", this.clickHandler);
+            if (!this.hoverHandler) {
+                svgElement.style.cursor = "";
+            }
         }
         this.clickHandler = undefined;
     }

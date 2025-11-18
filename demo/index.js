@@ -1059,6 +1059,7 @@ import { TransposeCalculator } from '../src/Plugins/Transpose/TransposeCalculato
         ).then(
             function () {
                 addClickHandlersToChordSymbols();
+                addClickHandlersToNotes();
                 return onLoadingEnd(isCustom);
             }, function (e) {
                 errorLoadingOrRenderingSheet(e, "loading");
@@ -1405,6 +1406,125 @@ import { TransposeCalculator } from '../src/Plugins/Transpose/TransposeCalculato
                 console.log("[OSMD demo] No chord symbols with SVG nodes found");
                 if (chordsWithoutSVG > 0) {
                     console.log("[OSMD demo] " + chordsWithoutSVG + " chord symbols found but without SVG nodes");
+                }
+            }
+        }, 100); // Small delay to ensure SVG is fully rendered
+    }
+
+    /**
+     * Example: Add click handlers to notes with larger click area (using VoiceEntry bounding box)
+     * This demonstrates the enhanced click area feature where the clickable region
+     * is expanded to cover the entire VoiceEntry bounding box, not just the note itself.
+     */
+    function addClickHandlersToNotes() {
+        if (!openSheetMusicDisplay || !openSheetMusicDisplay.graphic) {
+            return;
+        }
+
+        // Only works with SVG backend
+        if (openSheetMusicDisplay.backendType !== BackendType.SVG) {
+            console.log("[OSMD demo] Note click handlers only work with SVG backend");
+            return;
+        }
+
+        // Wait a bit for SVG elements to be fully rendered in the DOM
+        setTimeout(function () {
+            let notesWithHandlers = 0;
+            let notesWithoutSVG = 0;
+
+            // Get all instruments and iterate through their voices
+            const instruments = openSheetMusicDisplay.Sheet.Instruments;
+
+            for (let instIdx = 0; instIdx < instruments.length; instIdx++) {
+                const instrument = instruments[instIdx];
+                const voices = instrument.Voices;
+
+                for (let voiceIdx = 0; voiceIdx < voices.length; voiceIdx++) {
+                    const voice = voices[voiceIdx];
+                    const voiceEntries = voice.VoiceEntries;
+
+                    for (let veIdx = 0; veIdx < voiceEntries.length; veIdx++) {
+                        const voiceEntry = voiceEntries[veIdx];
+                        const notes = voiceEntry.Notes;
+
+                        for (let noteIdx = 0; noteIdx < notes.length; noteIdx++) {
+                            const note = notes[noteIdx];
+
+                            // Get the graphical note using the rules mapping
+                            const graphicalNote = openSheetMusicDisplay.EngravingRules.GNote(note);
+
+                            if (!graphicalNote) {
+                                notesWithoutSVG++;
+                                continue;
+                            }
+
+                            // Check if the note has an SVG element
+                            if (!graphicalNote.getSVGGElement) {
+                                notesWithoutSVG++;
+                                continue;
+                            }
+
+                            const svgElement = graphicalNote.getSVGGElement();
+                            if (!svgElement) {
+                                notesWithoutSVG++;
+                                continue;
+                            }
+
+                            // Add click handler - this will use the larger VoiceEntry bounding box
+                            graphicalNote.setClickHandler(function (event) {
+                                const pitch = note.Pitch;
+                                const pitchString = pitch ? pitch.ToString() : "Rest";
+
+                                console.log("Note clicked (with larger click area):", {
+                                    pitch: pitchString,
+                                    duration: note.Length.toString(),
+                                    voice: voiceIdx,
+                                    instrument: instIdx,
+                                    noteIndex: noteIdx
+                                });
+
+                                // Visual feedback: toggle note color on click
+                                // Get current fill color from the notehead SVG to determine if it's already highlighted
+                                let isHighlighted = false;
+                                if (graphicalNote.getNoteheadSVGs) {
+                                    const noteheads = graphicalNote.getNoteheadSVGs();
+                                    if (noteheads && noteheads.length > 0) {
+                                        const firstNotehead = noteheads[0];
+                                        if (firstNotehead.children && firstNotehead.children.length > 0) {
+                                            const fill = firstNotehead.children[0].getAttribute("fill");
+                                            isHighlighted = fill === "#FF6B6B" || fill === "rgb(255, 107, 107)";
+                                        }
+                                    }
+                                }
+
+                                if (isHighlighted) {
+                                    // Reset to black
+                                    graphicalNote.setColor("#000000", {
+                                        applyToNoteheads: true,
+                                        applyToStem: true
+                                    });
+                                } else {
+                                    // Highlight in red
+                                    graphicalNote.setColor("#FF6B6B", {
+                                        applyToNoteheads: true,
+                                        applyToStem: true
+                                    });
+                                }
+                            });
+
+                            notesWithHandlers++;
+                        }
+                    }
+                }
+            }
+
+            if (notesWithHandlers > 0) {
+                console.log("[OSMD demo] Added click handlers to " + notesWithHandlers + " notes (with larger click area using VoiceEntry bounding box)");
+                console.log("[OSMD demo] Try clicking near notes - the click area is larger than just the notehead!");
+            } else {
+                console.log("[OSMD demo] No notes with SVG nodes found");
+                if (notesWithoutSVG > 0) {
+                    console.log("[OSMD demo] " + notesWithoutSVG + " notes found but without SVG nodes");
                 }
             }
         }, 100); // Small delay to ensure SVG is fully rendered
