@@ -192,6 +192,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
     private hoverHandler?: (event: MouseEvent) => void;
     private clickHandler?: (event: MouseEvent) => void;
+    private wrappedClickHandler?: (event: MouseEvent) => void; // Wrapped click handler that also triggers mouseleave
     private mouseLeaveHandler?: (event: MouseEvent) => void;
     private interactionOverlayRect?: SVGRectElement; // Shared overlay for both hover and click
 
@@ -373,28 +374,57 @@ export class VexFlowGraphicalNote extends GraphicalNote {
                     }
 
                     // Attach click handler to the shared overlay
-                    this.interactionOverlayRect.addEventListener("click", this.clickHandler);
+                    // Also trigger mouseleave on click to hide tooltips
+                    this.wrappedClickHandler = (event: MouseEvent): void => {
+                        this.clickHandler(event);
+                        // Trigger mouseleave to hide tooltip when clicking
+                        if (this.mouseLeaveHandler) {
+                            this.mouseLeaveHandler(event);
+                        }
+                    };
+                    this.interactionOverlayRect.addEventListener("click", this.wrappedClickHandler);
                 } else {
                     // Fallback to original behavior if bounding box is invalid
-                    svgElement.addEventListener("click", this.clickHandler);
+                    this.wrappedClickHandler = (event: MouseEvent): void => {
+                        this.clickHandler(event);
+                        // Trigger mouseleave to hide tooltip when clicking
+                        if (this.mouseLeaveHandler) {
+                            this.mouseLeaveHandler(event);
+                        }
+                    };
+                    svgElement.addEventListener("click", this.wrappedClickHandler);
                     svgElement.style.cursor = "pointer";
                 }
             } else {
                 // Fallback to original behavior if we can't find SVG root
-                svgElement.addEventListener("click", this.clickHandler);
+                this.wrappedClickHandler = (event: MouseEvent): void => {
+                    this.clickHandler(event);
+                    // Trigger mouseleave to hide tooltip when clicking
+                    if (this.mouseLeaveHandler) {
+                        this.mouseLeaveHandler(event);
+                    }
+                };
+                svgElement.addEventListener("click", this.wrappedClickHandler);
                 svgElement.style.cursor = "pointer";
             }
         } else {
         // Fallback to original behavior if no StaffEntry bounding box
-            svgElement.addEventListener("click", this.clickHandler);
+            this.wrappedClickHandler = (event: MouseEvent): void => {
+                this.clickHandler(event);
+                // Trigger mouseleave to hide tooltip when clicking
+                if (this.mouseLeaveHandler) {
+                    this.mouseLeaveHandler(event);
+                }
+            };
+            svgElement.addEventListener("click", this.wrappedClickHandler);
             svgElement.style.cursor = "pointer";
         }
     }
 
     public removeClickHandler(): void {
         // Remove click handler from shared interaction overlay if it exists
-        if (this.interactionOverlayRect && this.clickHandler) {
-            this.interactionOverlayRect.removeEventListener("click", this.clickHandler);
+        if (this.interactionOverlayRect && this.wrappedClickHandler) {
+            this.interactionOverlayRect.removeEventListener("click", this.wrappedClickHandler);
             // Only remove overlay if no hover handler is using it
             if (!this.hoverHandler) {
                 this.interactionOverlayRect.remove();
@@ -407,13 +437,14 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
         // Also remove from the original SVG element as fallback
         const svgElement: SVGGElement = this.getSVGGElement();
-        if (svgElement && this.clickHandler) {
-            svgElement.removeEventListener("click", this.clickHandler);
+        if (svgElement && this.wrappedClickHandler) {
+            svgElement.removeEventListener("click", this.wrappedClickHandler);
             if (!this.hoverHandler) {
                 svgElement.style.cursor = "";
             }
         }
         this.clickHandler = undefined;
+        this.wrappedClickHandler = undefined;
     }
 
     /** Gets the SVG path element of the note's stem. */
