@@ -409,6 +409,11 @@ export class EngravingRules {
     public RenderArpeggios: boolean;
     public RenderSlurs: boolean;
     public RenderGlissandi: boolean;
+    /** When true, notes with PrintObject=false still contribute to measure spacing (useful for ear training).
+     *  When false, hidden notes are excluded from spacing calculations (rendered as GhostNotes).
+     *  Default: false (hidden notes do not contribute to spacing).
+     */
+    public SpaceHiddenNotes: boolean;
     public ColoringMode: ColoringMode;
     public ColoringEnabled: boolean;
     public ColorStemsLikeNoteheads: boolean;
@@ -803,6 +808,9 @@ export class EngravingRules {
         this.LyricOverlapAllowedIntoNextMeasure = 3.4; // optimal for dashed last lyric, see Land der Berge
         this.MinimumDistanceBetweenDashes = 10;
         this.MaximumLyricsElongationFactor = 2.5;
+
+        // Hidden notes spacing (ear training)
+        this.SpaceHiddenNotes = false; // Default: hidden notes contribute to spacing
 
         // expressions variables
         this.TempoYSpacing = 0.5; // note this is correlated with MetronomeMarkYShift: one-sided change can cause collisions

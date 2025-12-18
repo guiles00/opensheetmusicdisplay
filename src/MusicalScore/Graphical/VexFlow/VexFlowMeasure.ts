@@ -1311,16 +1311,18 @@ export class VexFlowMeasure extends GraphicalMeasure {
                     }
                     continue;
                 }
+                // Check if hidden notes should be excluded from spacing
+                if (!gve.notes[0].sourceNote.PrintObject && !this.rules.SpaceHiddenNotes) {
+                    // Exclude hidden note from spacing - use GhostNotes instead of StaveNote
+                    const ghostNotes: VF.GhostNote[] = VexFlowConverter.GhostNotes(gve.notes[0].sourceNote.Length);
+                    if (ghostNotes.length > 0) {
+                        (gve as VexFlowVoiceEntry).vfStaveNote = ghostNotes[0];
+                        (gve as VexFlowVoiceEntry).vfGhostNotes = ghostNotes.slice(1);
+                    }
+                    graceGVoiceEntriesBefore = []; // if note is not rendered, its grace notes shouldn't be rendered
+                    continue;
+                }
                 (gve as VexFlowVoiceEntry).vfStaveNote = VexFlowConverter.StaveNote(gve);
-                //if (!gve.notes[0].sourceNote.PrintObject) {
-                    // note can now also be added as StaveNote instead of GhostNote, because we set it to transparent
-
-                    // previous method: add as GhostNote instead of StaveNote. Can cause formatting issues if critical notes are missing in the measure
-                    // don't render note. add ghost note, otherwise Vexflow can have issues with layouting when voices not complete.
-                    //(gve as VexFlowVoiceEntry).vfStaveNote = VexFlowConverter.GhostNote(gve.notes[0].sourceNote.Length);
-                    //graceGVoiceEntriesBefore = []; // if note is not rendered, its grace notes shouldn't be rendered, might need to be removed
-                    //continue;
-                //}
                 if (graceGVoiceEntriesBefore.length > 0) {
                     // add grace notes that came before this main note to a GraceNoteGroup in Vexflow, attached to the main note
                     const graceNotes: VF.GraceNote[] = [];
