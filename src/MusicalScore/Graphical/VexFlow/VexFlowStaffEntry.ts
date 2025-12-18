@@ -54,7 +54,12 @@ export class VexFlowStaffEntry extends GraphicalStaffEntry {
                     // somehow, gve.vfStaveNote.getBoundingBox() is null for a TabNote (which is a StemmableNote).
                     bboxToAdjust.RelativePosition.x = (gve.vfStaveNote.getAbsoluteX() + (<any>gve.vfStaveNote).glyph.getWidth()) / unitInPixels;
                 } else {
-                    bboxToAdjust.RelativePosition.x = gve.vfStaveNote.getBoundingBox().getX() / unitInPixels;
+                    const boundingBox: VF.BoundingBox = gve.vfStaveNote.getBoundingBox();
+                    if (!boundingBox) {
+                        // GhostNotes don't have bounding boxes, skip position calculation for hidden notes
+                        continue;
+                    }
+                    bboxToAdjust.RelativePosition.x = boundingBox.getX() / unitInPixels;
                     if (isSecondaryWholeRest) {
                         bboxToAdjust.RelativePosition.x -= stave.getNoteStartX() / unitInPixels;
                         bboxToAdjust.RelativePosition.x -= 1.3;
