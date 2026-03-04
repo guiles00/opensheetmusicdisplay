@@ -1567,6 +1567,21 @@ export class OpenSheetMusicDisplay {
 
     private ensureRangeSelectionOverlay(): void {
         if (this.rangeInteractionOverlay) {
+            // Backend refresh can remove all container children, which detaches this node.
+            // If the reference exists but the node is no longer connected, re-attach it.
+            const overlayDetached: boolean = !this.rangeInteractionOverlay.isConnected
+                || this.rangeInteractionOverlay.parentElement !== this.container;
+            if (!overlayDetached) {
+                return;
+            }
+            this.rangeInteractionOverlay.style.position = "absolute";
+            this.rangeInteractionOverlay.style.left = "0";
+            this.rangeInteractionOverlay.style.top = "0";
+            this.rangeInteractionOverlay.style.right = "0";
+            this.rangeInteractionOverlay.style.bottom = "0";
+            this.rangeInteractionOverlay.style.pointerEvents = "none";
+            this.rangeInteractionOverlay.style.zIndex = this.getSelectionOverlayZIndex().toString();
+            this.container.appendChild(this.rangeInteractionOverlay);
             return;
         }
         if (window.getComputedStyle(this.container).position === "static") {
@@ -1580,6 +1595,7 @@ export class OpenSheetMusicDisplay {
         this.rangeInteractionOverlay.style.right = "0";
         this.rangeInteractionOverlay.style.bottom = "0";
         this.rangeInteractionOverlay.style.pointerEvents = "none";
+        this.rangeInteractionOverlay.style.zIndex = this.getSelectionOverlayZIndex().toString();
         this.container.appendChild(this.rangeInteractionOverlay);
     }
 
@@ -1977,6 +1993,7 @@ export class OpenSheetMusicDisplay {
         if (!this.rangeInteractionOverlay) {
             return;
         }
+        this.refreshCommittedRangeAnchorsFromTimestamps();
         this.rangeInteractionOverlay.innerHTML = "";
         this.applyNoteOpacityForCurrentSelection();
         const hideSelectionVisuals: boolean = this.shouldHideSelectionRangeVisuals();
@@ -1997,6 +2014,19 @@ export class OpenSheetMusicDisplay {
         if (!hideSelectionVisuals && !this.isRangeDragging && this.hoverAnchor) {
             this.renderVerticalLine(this.hoverAnchor, this.getSelectionLineColor(), 2);
         }
+    }
+
+    private refreshCommittedRangeAnchorsFromTimestamps(): void {
+        if (this.isRangeDragging || !this.dragStartAnchor || !this.dragCurrentAnchor || !this.graphic) {
+            return;
+        }
+        const refreshedStartAnchor: RangeSelectionAnchor = this.createAnchorFromTimestamp(new Fraction(this.dragStartAnchor.timestampReal, 1));
+        const refreshedEndAnchor: RangeSelectionAnchor = this.createAnchorFromTimestamp(new Fraction(this.dragCurrentAnchor.timestampReal, 1));
+        if (!refreshedStartAnchor || !refreshedEndAnchor) {
+            return;
+        }
+        this.dragStartAnchor = refreshedStartAnchor;
+        this.dragCurrentAnchor = refreshedEndAnchor;
     }
 
     private renderSelectionRangeOverlay(start: RangeSelectionAnchor, end: RangeSelectionAnchor): void {
