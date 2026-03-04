@@ -128,6 +128,12 @@ export class OpenSheetMusicDisplay {
     private rangeInteractionOverlay: HTMLDivElement;
     private rangeInteractionBoundElements: HTMLElement[] = [];
     private isRangeDragging: boolean = false;
+    private hasActiveRangeSelectionOpacity: boolean = false;
+    private rangeOpacityUpdateTimeoutId: number = 0;
+    private lastRangeOpacityUpdateTimestampMs: number = 0;
+    private pendingRangePointerMoveAnchor: RangeSelectionAnchor;
+    private rangePointerMoveAnimationFrameId: number = 0;
+    private needsCommittedRangeAnchorRefresh: boolean = false;
     private hoverAnchor: RangeSelectionAnchor;
     private dragStartAnchor: RangeSelectionAnchor;
     private dragCurrentAnchor: RangeSelectionAnchor;
@@ -328,6 +334,7 @@ export class OpenSheetMusicDisplay {
         }
         this.reapplyStaffOpacityOverrides();
         this.syncInteractiveRangeSelection();
+        this.needsCommittedRangeAnchorRefresh = true;
         this.renderRangeSelection();
         this.zoomUpdated = false;
         this.rules.RenderCount++;
@@ -563,20 +570,16 @@ export class OpenSheetMusicDisplay {
         if (options.onXMLRead) {
             this.OnXMLRead = options.onXMLRead;
         }
-        this.OnRangeSelectionChange = undefined;
-        if (options.onRangeSelectionChange) {
+        if ("onRangeSelectionChange" in options) {
             this.OnRangeSelectionChange = options.onRangeSelectionChange;
         }
-        this.OnRangeSelectionLoopRequest = undefined;
-        if (options.onRangeSelectionLoopRequest) {
+        if ("onRangeSelectionLoopRequest" in options) {
             this.OnRangeSelectionLoopRequest = options.onRangeSelectionLoopRequest;
         }
-        this.OnRangeSelectionClearRequest = undefined;
-        if (options.onRangeSelectionClearRequest) {
+        if ("onRangeSelectionClearRequest" in options) {
             this.OnRangeSelectionClearRequest = options.onRangeSelectionClearRequest;
         }
-        this.OnRangeSelectionControlsRender = undefined;
-        if (options.onRangeSelectionControlsRender) {
+        if ("onRangeSelectionControlsRender" in options) {
             this.OnRangeSelectionControlsRender = options.onRangeSelectionControlsRender;
         }
         if (options.interactiveRangeSelection !== undefined) {
@@ -1556,6 +1559,12 @@ export class OpenSheetMusicDisplay {
     }
 
     private detachRangeSelectionListeners(): void {
+        this.cancelPendingRangeOpacityUpdate();
+        if (this.rangePointerMoveAnimationFrameId !== 0) {
+            window.cancelAnimationFrame(this.rangePointerMoveAnimationFrameId);
+            this.rangePointerMoveAnimationFrameId = 0;
+        }
+        this.pendingRangePointerMoveAnchor = undefined;
         for (const element of this.rangeInteractionBoundElements) {
             element.removeEventListener("pointermove", this.rangePointerMoveListener);
             element.removeEventListener("pointerdown", this.rangePointerDownListener);
@@ -1619,6 +1628,26 @@ export class OpenSheetMusicDisplay {
             return;
         }
         const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
+        if (!anchor) {
+            return;
+        }
+        this.pendingRangePointerMoveAnchor = anchor;
+        if (this.rangePointerMoveAnimationFrameId !== 0) {
+            return;
+        }
+        this.rangePointerMoveAnimationFrameId = window.requestAnimationFrame((): void => {
+            this.rangePointerMoveAnimationFrameId = 0;
+            this.flushRangePointerMove();
+        });
+    }
+
+    private flushRangePointerMove(): void {
+        if (!this.interactiveRangeSelectionEnabled) {
+            this.pendingRangePointerMoveAnchor = undefined;
+            return;
+        }
+        const anchor: RangeSelectionAnchor = this.pendingRangePointerMoveAnchor;
+        this.pendingRangePointerMoveAnchor = undefined;
         if (!anchor) {
             return;
         }
@@ -1993,9 +2022,12 @@ export class OpenSheetMusicDisplay {
         if (!this.rangeInteractionOverlay) {
             return;
         }
-        this.refreshCommittedRangeAnchorsFromTimestamps();
+        if (this.needsCommittedRangeAnchorRefresh) {
+            this.refreshCommittedRangeAnchorsFromTimestamps();
+            this.needsCommittedRangeAnchorRefresh = false;
+        }
         this.rangeInteractionOverlay.innerHTML = "";
-        this.applyNoteOpacityForCurrentSelection();
+        this.updateRangeSelectionOpacity();
         const hideSelectionVisuals: boolean = this.shouldHideSelectionRangeVisuals();
         if (this.dragStartAnchor && this.dragCurrentAnchor) {
             if (!hideSelectionVisuals && (this.isRangeDragging || this.shouldShowCommittedRangeFill())) {
@@ -2071,11 +2103,25 @@ export class OpenSheetMusicDisplay {
 
     private renderVerticalLine(anchor: RangeSelectionAnchor, color: string, widthPx: number): void {
         const line: HTMLDivElement = document.createElement("div");
+        const overlayHeight: number = this.rangeInteractionOverlay?.clientHeight ?? 0;
+        let topPx: number = anchor.yPx;
+        let heightPx: number = anchor.heightPx;
+        const lineOutsideOverlay: boolean = overlayHeight > 0 && (topPx + heightPx < 0 || topPx > overlayHeight);
+        const invalidLineGeometry: boolean = !Number.isFinite(topPx) || !Number.isFinite(heightPx) || heightPx <= 1 || lineOutsideOverlay;
+        if (invalidLineGeometry && overlayHeight > 0) {
+            // App layouts with additional wrappers/transforms can shift computed Y bounds.
+            // Fall back to overlay height so the cursor remains visible.
+            topPx = 0;
+            heightPx = overlayHeight;
+        } else if (overlayHeight > 0) {
+            topPx = Math.max(0, Math.min(topPx, overlayHeight - 1));
+            heightPx = Math.max(1, Math.min(heightPx, overlayHeight - topPx));
+        }
         line.style.position = "absolute";
         line.style.left = `${anchor.xPx - widthPx / 2}px`;
-        line.style.top = `${anchor.yPx}px`;
+        line.style.top = `${topPx}px`;
         line.style.width = `${widthPx}px`;
-        line.style.height = `${anchor.heightPx}px`;
+        line.style.height = `${heightPx}px`;
         line.style.borderRadius = "999px";
         line.style.backgroundColor = color;
         this.rangeInteractionOverlay.appendChild(line);
@@ -2173,8 +2219,58 @@ export class OpenSheetMusicDisplay {
         return this.interactiveRangeSelectionOptions.nonSelectedNotesOpacity ?? 0.28;
     }
 
+    private getGrayOutUpdateIntervalMs(): number {
+        const configuredIntervalMs: number = this.interactiveRangeSelectionOptions.grayOutUpdateIntervalMs ?? 25;
+        return Math.max(0, configuredIntervalMs);
+    }
+
     private shouldShowCommittedRangeFill(): boolean {
         return this.interactiveRangeSelectionOptions.showCommittedRangeFill === true;
+    }
+
+    private updateRangeSelectionOpacity(): void {
+        if (!this.dragStartAnchor || !this.dragCurrentAnchor || !this.shouldGrayOutNonSelectedNotes()) {
+            this.cancelPendingRangeOpacityUpdate();
+            this.resetRangeSelectionNoteOpacity();
+            return;
+        }
+        const intervalMs: number = this.getGrayOutUpdateIntervalMs();
+        if (!this.isRangeDragging || intervalMs <= 0) {
+            this.cancelPendingRangeOpacityUpdate();
+            this.applyRangeSelectionOpacityNow();
+            return;
+        }
+        const nowMs: number = Date.now();
+        const elapsedMs: number = nowMs - this.lastRangeOpacityUpdateTimestampMs;
+        if (!this.hasActiveRangeSelectionOpacity || elapsedMs >= intervalMs) {
+            this.cancelPendingRangeOpacityUpdate();
+            this.applyRangeSelectionOpacityNow();
+            return;
+        }
+        if (this.rangeOpacityUpdateTimeoutId !== 0) {
+            return;
+        }
+        const remainingMs: number = Math.max(0, intervalMs - elapsedMs);
+        this.rangeOpacityUpdateTimeoutId = window.setTimeout((): void => {
+            this.rangeOpacityUpdateTimeoutId = 0;
+            if (!this.interactiveRangeSelectionEnabled || !this.dragStartAnchor || !this.dragCurrentAnchor) {
+                this.resetRangeSelectionNoteOpacity();
+                return;
+            }
+            this.applyRangeSelectionOpacityNow();
+        }, remainingMs);
+    }
+
+    private applyRangeSelectionOpacityNow(): void {
+        this.applyNoteOpacityForCurrentSelection();
+        this.lastRangeOpacityUpdateTimestampMs = Date.now();
+    }
+
+    private cancelPendingRangeOpacityUpdate(): void {
+        if (this.rangeOpacityUpdateTimeoutId !== 0) {
+            window.clearTimeout(this.rangeOpacityUpdateTimeoutId);
+            this.rangeOpacityUpdateTimeoutId = 0;
+        }
     }
 
     private applyNoteOpacityForCurrentSelection(): void {
@@ -2213,10 +2309,15 @@ export class OpenSheetMusicDisplay {
         }
         this.applyStaffEntryElementOpacityForSelection(segments, nonSelectedOpacity);
         this.applyTupletOpacityForSelection(segments, nonSelectedOpacity);
+        this.hasActiveRangeSelectionOpacity = true;
     }
 
     private resetRangeSelectionNoteOpacity(): void {
+        if (!this.hasActiveRangeSelectionOpacity) {
+            return;
+        }
         if (!this.sheet || !this.graphic) {
+            this.hasActiveRangeSelectionOpacity = false;
             return;
         }
         for (const instrument of this.sheet.Instruments) {
@@ -2235,6 +2336,8 @@ export class OpenSheetMusicDisplay {
         }
         this.resetStaffEntryElementOpacity();
         this.resetTupletOpacity();
+        this.hasActiveRangeSelectionOpacity = false;
+        this.lastRangeOpacityUpdateTimestampMs = 0;
     }
 
     private applyStaffEntryElementOpacityForSelection(

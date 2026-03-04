@@ -38,6 +38,7 @@ export interface InteractiveRangeSelectionOptions {
     clearButtonLabel?: string;
     grayOutNonSelectedNotes?: boolean;
     nonSelectedNotesOpacity?: number;
+    grayOutUpdateIntervalMs?: number;
     showCommittedRangeFill?: boolean;
     hideSelectionRange?: boolean;
     overlayZIndex?: number;
