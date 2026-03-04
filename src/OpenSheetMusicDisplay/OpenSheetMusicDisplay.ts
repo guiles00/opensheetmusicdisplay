@@ -30,8 +30,19 @@ import { MultiExpression } from "../MusicalScore/VoiceData/Expressions/MultiExpr
 import { OctaveShift } from "../MusicalScore/VoiceData/Expressions/ContinuousExpressions/OctaveShift";
 import { GraphicalLyricEntry } from "../MusicalScore/Graphical/GraphicalLyricEntry";
 import { GraphicalChordSymbolContainer } from "../MusicalScore/Graphical/GraphicalChordSymbolContainer";
+import { GraphicalLabel } from "../MusicalScore/Graphical/GraphicalLabel";
 import { MultiTempoExpression } from "../MusicalScore/VoiceData/Expressions/MultiTempoExpression";
 import { MidiExporter, MidiExportOptions } from "../MusicalScore/Export/MidiExporter";
+import { PointF2D } from "../Common/DataObjects/PointF2D";
+import { GraphicalStaffEntry } from "../MusicalScore/Graphical/GraphicalStaffEntry";
+import { MusicSystem } from "../MusicalScore/Graphical/MusicSystem";
+import { GraphicalMeasure } from "../MusicalScore/Graphical/GraphicalMeasure";
+import {
+    InteractiveRangeSelectionOptions,
+    RangeSelectionAnchor,
+    RangeSelectionDirection,
+    RangeSelectionPayload
+} from "./RangeSelection";
 
 /**
  * The main class and control point of OpenSheetMusicDisplay.<br>
@@ -108,6 +119,23 @@ export class OpenSheetMusicDisplay {
      * so you can make modifications to the xml that OSMD will use.
      * Note that this is (re-)set on osmd.setOptions as `{return xml}`, unless you specify the function in the options. */
     public OnXMLRead: (xml: string) => string;
+    public OnRangeSelectionChange: (payload: RangeSelectionPayload) => void;
+    public OnRangeSelectionLoopRequest: (payload: RangeSelectionPayload) => void;
+    public OnRangeSelectionClearRequest: (payload: RangeSelectionPayload) => void;
+    public OnRangeSelectionControlsRender: (container: HTMLDivElement, payload: RangeSelectionPayload) => void;
+    private interactiveRangeSelectionEnabled: boolean = false;
+    private interactiveRangeSelectionOptions: InteractiveRangeSelectionOptions = {};
+    private rangeInteractionOverlay: HTMLDivElement;
+    private rangeInteractionBoundElements: HTMLElement[] = [];
+    private isRangeDragging: boolean = false;
+    private hoverAnchor: RangeSelectionAnchor;
+    private dragStartAnchor: RangeSelectionAnchor;
+    private dragCurrentAnchor: RangeSelectionAnchor;
+    private activeDragBound: "start" | "end" | "both" = "both";
+    private readonly rangePointerMoveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerMove(event);
+    private readonly rangePointerDownListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerDown(event);
+    private readonly rangePointerUpListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerUp(event);
+    private readonly rangePointerLeaveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerLeave(event);
 
     /**
      * Load a MusicXML file
@@ -299,6 +327,8 @@ export class OpenSheetMusicDisplay {
             });
         }
         this.reapplyStaffOpacityOverrides();
+        this.syncInteractiveRangeSelection();
+        this.renderRangeSelection();
         this.zoomUpdated = false;
         this.rules.RenderCount++;
         //console.log("[OSMD] render finished");
@@ -465,6 +495,45 @@ export class OpenSheetMusicDisplay {
         this.reset(); // without this, resize will draw loaded sheet again
     }
 
+    /** Returns the currently committed interactive range selection, if any. */
+    public getRangeSelection(): RangeSelectionPayload {
+        if (!this.dragStartAnchor || !this.dragCurrentAnchor) {
+            return undefined;
+        }
+        return this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+    }
+
+    /** Programmatically sets the interactive range selection using absolute score timestamps. */
+    public setRangeSelection(start: Fraction, end: Fraction): void {
+        if (!this.graphic || !start || !end) {
+            return;
+        }
+        const startAnchor: RangeSelectionAnchor = this.createAnchorFromTimestamp(start);
+        const endAnchor: RangeSelectionAnchor = this.createAnchorFromTimestamp(end);
+        if (!startAnchor || !endAnchor) {
+            return;
+        }
+        this.dragStartAnchor = startAnchor;
+        this.dragCurrentAnchor = endAnchor;
+        this.renderRangeSelection();
+        this.emitRangeSelection("committed", startAnchor, endAnchor, false);
+    }
+
+    /** Clears the interactive range selection and removes all related overlays. */
+    public clearRangeSelection(emitCallback: boolean = true): void {
+        const hadSelection: boolean = !!(this.dragStartAnchor && this.dragCurrentAnchor);
+        const startAnchor: RangeSelectionAnchor = this.dragStartAnchor;
+        const endAnchor: RangeSelectionAnchor = this.dragCurrentAnchor;
+        this.dragStartAnchor = undefined;
+        this.dragCurrentAnchor = undefined;
+        this.activeDragBound = "both";
+        this.isRangeDragging = false;
+        this.renderRangeSelection();
+        if (emitCallback && hadSelection && startAnchor && endAnchor) {
+            this.emitRangeSelection("cleared", startAnchor, endAnchor, false);
+        }
+    }
+
     /** Set OSMD rendering options using an IOSMDOptions object.
      *  Can be called during runtime. Also called by constructor.
      *  For example, setOptions({autoResize: false}) will disable autoResize even during runtime.
@@ -493,6 +562,34 @@ export class OpenSheetMusicDisplay {
         this.OnXMLRead = function(xml): string {return xml;};
         if (options.onXMLRead) {
             this.OnXMLRead = options.onXMLRead;
+        }
+        this.OnRangeSelectionChange = undefined;
+        if (options.onRangeSelectionChange) {
+            this.OnRangeSelectionChange = options.onRangeSelectionChange;
+        }
+        this.OnRangeSelectionLoopRequest = undefined;
+        if (options.onRangeSelectionLoopRequest) {
+            this.OnRangeSelectionLoopRequest = options.onRangeSelectionLoopRequest;
+        }
+        this.OnRangeSelectionClearRequest = undefined;
+        if (options.onRangeSelectionClearRequest) {
+            this.OnRangeSelectionClearRequest = options.onRangeSelectionClearRequest;
+        }
+        this.OnRangeSelectionControlsRender = undefined;
+        if (options.onRangeSelectionControlsRender) {
+            this.OnRangeSelectionControlsRender = options.onRangeSelectionControlsRender;
+        }
+        if (options.interactiveRangeSelection !== undefined) {
+            this.interactiveRangeSelectionEnabled = options.interactiveRangeSelection;
+        }
+        if (options.interactiveRangeSelectionOptions !== undefined) {
+            this.interactiveRangeSelectionOptions = {
+                ...this.interactiveRangeSelectionOptions,
+                ...options.interactiveRangeSelectionOptions
+            };
+            if (options.interactiveRangeSelectionOptions.enabled !== undefined) {
+                this.interactiveRangeSelectionEnabled = options.interactiveRangeSelectionOptions.enabled;
+            }
         }
 
         const backendNotInitialized: boolean = !this.drawer || !this.drawer.Backends || this.drawer.Backends.length < 1;
@@ -741,6 +838,7 @@ export class OpenSheetMusicDisplay {
         if (options.skyBottomLineBatchMinMeasures !== undefined) {
             this.rules.SkyBottomLineBatchMinMeasures = options.skyBottomLineBatchMinMeasures;
         }
+        this.syncInteractiveRangeSelection();
     }
 
     public setColoringMode(options: IOSMDOptions): void {
@@ -831,6 +929,10 @@ export class OpenSheetMusicDisplay {
         this.zoom = 1.0;
         this.rules.RenderCount = 0;
         this.staffOpacityOverrides.clear();
+        this.clearRangeSelection(false);
+        this.hoverAnchor = undefined;
+        this.detachRangeSelectionListeners();
+        this.removeRangeSelectionOverlay();
     }
 
     /**
@@ -1418,6 +1520,856 @@ export class OpenSheetMusicDisplay {
                 }
             }
         }
+    }
+
+    private syncInteractiveRangeSelection(): void {
+        if (!this.interactiveRangeSelectionEnabled || !this.graphic || !this.drawer?.Backends?.length) {
+            this.detachRangeSelectionListeners();
+            this.removeRangeSelectionOverlay();
+            return;
+        }
+
+        this.ensureRangeSelectionOverlay();
+        this.updateRangeSelectionOverlayStyles();
+        this.attachRangeSelectionListeners();
+    }
+
+    private attachRangeSelectionListeners(): void {
+        const currentElements: HTMLElement[] = this.drawer.Backends
+            .map((backend: VexFlowBackend) => backend.getRenderElement())
+            .filter((element: HTMLElement) => !!element);
+        const sameBinding: boolean = currentElements.length === this.rangeInteractionBoundElements.length
+            && currentElements.every((element: HTMLElement, index: number) => this.rangeInteractionBoundElements[index] === element);
+        if (sameBinding) {
+            return;
+        }
+        this.detachRangeSelectionListeners();
+        for (const element of currentElements) {
+            element.addEventListener("pointermove", this.rangePointerMoveListener, { passive: true });
+            element.addEventListener("pointerdown", this.rangePointerDownListener);
+            element.addEventListener("pointerleave", this.rangePointerLeaveListener, { passive: true });
+            this.rangeInteractionBoundElements.push(element);
+        }
+        if (this.rangeInteractionBoundElements.length > 0) {
+            window.addEventListener("pointerup", this.rangePointerUpListener);
+        }
+    }
+
+    private detachRangeSelectionListeners(): void {
+        for (const element of this.rangeInteractionBoundElements) {
+            element.removeEventListener("pointermove", this.rangePointerMoveListener);
+            element.removeEventListener("pointerdown", this.rangePointerDownListener);
+            element.removeEventListener("pointerleave", this.rangePointerLeaveListener);
+        }
+        this.rangeInteractionBoundElements = [];
+        window.removeEventListener("pointerup", this.rangePointerUpListener);
+    }
+
+    private ensureRangeSelectionOverlay(): void {
+        if (this.rangeInteractionOverlay) {
+            return;
+        }
+        if (window.getComputedStyle(this.container).position === "static") {
+            this.container.style.position = "relative";
+        }
+        this.rangeInteractionOverlay = document.createElement("div");
+        this.rangeInteractionOverlay.className = "osmd-range-selection-overlay";
+        this.rangeInteractionOverlay.style.position = "absolute";
+        this.rangeInteractionOverlay.style.left = "0";
+        this.rangeInteractionOverlay.style.top = "0";
+        this.rangeInteractionOverlay.style.right = "0";
+        this.rangeInteractionOverlay.style.bottom = "0";
+        this.rangeInteractionOverlay.style.pointerEvents = "none";
+        this.container.appendChild(this.rangeInteractionOverlay);
+    }
+
+    private updateRangeSelectionOverlayStyles(): void {
+        if (!this.rangeInteractionOverlay) {
+            return;
+        }
+        this.rangeInteractionOverlay.style.zIndex = this.getSelectionOverlayZIndex().toString();
+    }
+
+    private removeRangeSelectionOverlay(): void {
+        if (!this.rangeInteractionOverlay) {
+            return;
+        }
+        this.rangeInteractionOverlay.remove();
+        this.rangeInteractionOverlay = undefined;
+    }
+
+    private onRangePointerMove(event: PointerEvent): void {
+        if (!this.interactiveRangeSelectionEnabled) {
+            return;
+        }
+        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
+        if (!anchor) {
+            return;
+        }
+        this.hoverAnchor = anchor;
+        if (this.isRangeDragging && this.dragStartAnchor) {
+            this.dragCurrentAnchor = anchor;
+            this.renderRangeSelection();
+            this.emitRangeSelection("dragging", this.dragStartAnchor, anchor, true);
+            return;
+        }
+        this.renderRangeSelection();
+        this.emitRangeSelection("hover", anchor, anchor, false);
+    }
+
+    private onRangePointerDown(event: PointerEvent): void {
+        if (!this.interactiveRangeSelectionEnabled) {
+            return;
+        }
+        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
+        if (!anchor) {
+            return;
+        }
+        const existingSelection: RangeSelectionPayload = this.getRangeSelection();
+        const draggedBound: "start" | "end" | undefined = this.getDraggedBoundFromAnchor(anchor, existingSelection);
+        if (existingSelection && !this.isAnchorInsideSelection(anchor, existingSelection)) {
+            if (draggedBound) {
+                this.isRangeDragging = true;
+                if (draggedBound === "start") {
+                    // Resize start bound (keep end fixed).
+                    this.activeDragBound = "start";
+                    this.dragStartAnchor = existingSelection.normalizedEnd;
+                } else {
+                    // Resize end bound (keep start fixed).
+                    this.activeDragBound = "end";
+                    this.dragStartAnchor = existingSelection.normalizedStart;
+                }
+                this.dragCurrentAnchor = anchor;
+                this.renderRangeSelection();
+                this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
+                event.preventDefault();
+                return;
+            }
+            this.clearRangeSelection(true);
+            event.preventDefault();
+            return;
+        }
+        this.isRangeDragging = true;
+        if (existingSelection) {
+            if (draggedBound === "start") {
+                // Resize start bound (keep end fixed).
+                this.activeDragBound = "start";
+                this.dragStartAnchor = existingSelection.normalizedEnd;
+                this.dragCurrentAnchor = anchor;
+            } else if (draggedBound === "end") {
+                // Resize end bound (keep start fixed).
+                this.activeDragBound = "end";
+                this.dragStartAnchor = existingSelection.normalizedStart;
+                this.dragCurrentAnchor = anchor;
+            } else {
+            this.activeDragBound = "both";
+            const startDistance: number = Math.abs(anchor.timestampReal - existingSelection.normalizedStart.timestampReal);
+            const endDistance: number = Math.abs(anchor.timestampReal - existingSelection.normalizedEnd.timestampReal);
+            if (startDistance <= endDistance) {
+                // Resize start bound (keep end fixed).
+                this.dragStartAnchor = existingSelection.normalizedEnd;
+            } else {
+                // Resize end bound (keep start fixed).
+                this.dragStartAnchor = existingSelection.normalizedStart;
+            }
+            this.dragCurrentAnchor = anchor;
+            }
+        } else {
+            this.activeDragBound = "both";
+            this.dragStartAnchor = anchor;
+            this.dragCurrentAnchor = anchor;
+        }
+        this.renderRangeSelection();
+        this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
+        event.preventDefault();
+    }
+
+    private onRangePointerUp(event: PointerEvent): void {
+        if (!this.interactiveRangeSelectionEnabled || !this.isRangeDragging || !this.dragStartAnchor) {
+            return;
+        }
+        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event) ?? this.dragCurrentAnchor ?? this.dragStartAnchor;
+        this.isRangeDragging = false;
+        this.dragCurrentAnchor = anchor;
+        const committedSelection: RangeSelectionPayload = this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(committedSelection, this.activeDragBound);
+        this.dragStartAnchor = paddedSelection.normalizedStart;
+        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
+        this.activeDragBound = "both";
+        if (!this.selectionHasAnyNotes(this.dragStartAnchor, this.dragCurrentAnchor)) {
+            this.clearRangeSelection(true);
+            return;
+        }
+        this.renderRangeSelection();
+        this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+    }
+
+    private onRangePointerLeave(event: PointerEvent): void {
+        if (this.isRangeDragging) {
+            return;
+        }
+        const relatedTarget: Node = event.relatedTarget as Node;
+        if (relatedTarget && this.rangeInteractionOverlay?.contains(relatedTarget)) {
+            return;
+        }
+        this.hoverAnchor = undefined;
+        this.renderRangeSelection();
+    }
+
+    private getAnchorFromPointerEvent(event: PointerEvent): RangeSelectionAnchor {
+        if (!this.graphic) {
+            return undefined;
+        }
+        const domPoint: PointF2D = new PointF2D(event.clientX, event.clientY);
+        const svgPoint: PointF2D = this.graphic.domToSvg(domPoint);
+        if (!svgPoint) {
+            return undefined;
+        }
+        const osmdPoint: PointF2D = this.graphic.svgToOsmd(svgPoint);
+        if (!osmdPoint) {
+            return undefined;
+        }
+        const system: MusicSystem = this.findSystemAtPosition(osmdPoint);
+        if (!system) {
+            return undefined;
+        }
+        const horizontalBounds: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
+        const xPx: number = Math.min(horizontalBounds.rightPx, Math.max(horizontalBounds.leftPx, svgPoint.x));
+        const x: number = xPx / (this.zoom * 10.0);
+        const startTime: Fraction = system.GetSystemsFirstTimeStamp();
+        const endTime: Fraction = system.GetSystemsLastTimeStamp();
+        const totalWidthPx: number = Math.max(1, horizontalBounds.rightPx - horizontalBounds.leftPx);
+        const ratio: number = (xPx - horizontalBounds.leftPx) / totalWidthPx;
+        const clampedRatio: number = Math.max(0, Math.min(1, ratio));
+        const timestampReal: number = startTime.RealValue + (endTime.RealValue - startTime.RealValue) * clampedRatio;
+        const timestamp: Fraction = new Fraction(timestampReal, 1);
+        if (!timestamp) {
+            return undefined;
+        }
+        const staffEntry: GraphicalStaffEntry = this.graphic.GetNearestStaffEntry(new PointF2D(x, osmdPoint.y));
+        const lineBounds: { yPx: number, heightPx: number } = this.getSystemVerticalBoundsInPixels(system);
+        return {
+            timestamp,
+            timestampReal,
+            measureIndex: staffEntry?.parentMeasure?.parentSourceMeasure?.measureListIndex
+                ?? system.GraphicalMeasures[0]?.[0]?.parentSourceMeasure?.measureListIndex
+                ?? 0,
+            systemIndex: this.getSystemIndex(system),
+            pageNumber: system.Parent?.PageNumber ?? 1,
+            staffIndex: staffEntry?.sourceStaffEntry?.ParentStaff?.idInMusicSheet ?? system.StaffLines[0]?.ParentStaff?.idInMusicSheet ?? 0,
+            x,
+            xPx,
+            yPx: lineBounds.yPx,
+            heightPx: lineBounds.heightPx
+        };
+    }
+
+    private createAnchorFromTimestamp(timestamp: Fraction): RangeSelectionAnchor {
+        if (!this.graphic) {
+            return undefined;
+        }
+        const result: [number, MusicSystem] = this.graphic.calculateXPositionFromTimestamp(timestamp);
+        if (!result || !result[1]) {
+            return undefined;
+        }
+        const x: number = result[0];
+        const system: MusicSystem = result[1];
+        const systemMeasure: GraphicalMeasure = system.GraphicalMeasures[0]?.[0];
+        const lineBounds: { yPx: number, heightPx: number } = this.getSystemVerticalBoundsInPixels(system);
+        return {
+            timestamp,
+            timestampReal: timestamp.RealValue,
+            measureIndex: systemMeasure?.parentSourceMeasure?.measureListIndex ?? 0,
+            systemIndex: this.getSystemIndex(system),
+            pageNumber: system.Parent?.PageNumber ?? 1,
+            staffIndex: system.StaffLines[0]?.ParentStaff?.idInMusicSheet ?? 0,
+            x,
+            xPx: x * this.zoom * 10.0,
+            yPx: lineBounds.yPx,
+            heightPx: lineBounds.heightPx
+        };
+    }
+
+    private getSystemVerticalBoundsInPixels(system: MusicSystem): { yPx: number, heightPx: number } {
+        const firstStaffLine: MusicSystem["StaffLines"][number] = system.StaffLines[0];
+        const lastStaffLine: MusicSystem["StaffLines"][number] = system.StaffLines[system.StaffLines.length - 1];
+        const y: number = system.PositionAndShape.AbsolutePosition.y + firstStaffLine.PositionAndShape.RelativePosition.y;
+        const bottomY: number = system.PositionAndShape.AbsolutePosition.y + lastStaffLine.PositionAndShape.RelativePosition.y + lastStaffLine.StaffHeight;
+        const scale: number = this.zoom * 10.0;
+        return {
+            yPx: y * scale,
+            heightPx: (bottomY - y) * scale
+        };
+    }
+
+    private getSystemHorizontalBoundsInPixels(system: MusicSystem): { leftPx: number, rightPx: number } {
+        const scale: number = this.zoom * 10.0;
+        return {
+            leftPx: system.GetLeftBorderAbsoluteXPosition() * scale,
+            rightPx: system.GetRightBorderAbsoluteXPosition() * scale
+        };
+    }
+
+    private getSystemIndex(targetSystem: MusicSystem): number {
+        let index: number = 0;
+        for (const page of this.graphic.MusicPages) {
+            for (const system of page.MusicSystems) {
+                if (system === targetSystem) {
+                    return index;
+                }
+                index++;
+            }
+        }
+        return -1;
+    }
+
+    private findSystemAtPosition(position: PointF2D): MusicSystem {
+        if (!this.graphic) {
+            return undefined;
+        }
+        let closestSystem: MusicSystem = undefined;
+        let closestDistance: number = Number.MAX_VALUE;
+        for (const page of this.graphic.MusicPages) {
+            for (const system of page.MusicSystems) {
+                const left: number = system.GetLeftBorderAbsoluteXPosition();
+                const right: number = system.GetRightBorderAbsoluteXPosition();
+                const firstStaffLine: MusicSystem["StaffLines"][number] = system.StaffLines[0];
+                const lastStaffLine: MusicSystem["StaffLines"][number] = system.StaffLines[system.StaffLines.length - 1];
+                if (!firstStaffLine || !lastStaffLine) {
+                    continue;
+                }
+                const top: number = system.PositionAndShape.AbsolutePosition.y + firstStaffLine.PositionAndShape.RelativePosition.y;
+                const bottom: number = system.PositionAndShape.AbsolutePosition.y
+                    + lastStaffLine.PositionAndShape.RelativePosition.y + lastStaffLine.StaffHeight;
+                if (position.x >= left && position.x <= right && position.y >= top && position.y <= bottom) {
+                    return system;
+                }
+                const dx: number = position.x < left ? left - position.x : (position.x > right ? position.x - right : 0);
+                const dy: number = position.y < top ? top - position.y : (position.y > bottom ? position.y - bottom : 0);
+                const distance: number = dx + dy;
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestSystem = system;
+                }
+            }
+        }
+        return closestSystem;
+    }
+
+    private isAnchorInsideSelection(anchor: RangeSelectionAnchor, selection: RangeSelectionPayload): boolean {
+        if (!anchor || !selection) {
+            return false;
+        }
+        return anchor.timestampReal >= selection.normalizedStart.timestampReal
+            && anchor.timestampReal <= selection.normalizedEnd.timestampReal;
+    }
+
+    private getDraggedBoundFromAnchor(anchor: RangeSelectionAnchor, selection: RangeSelectionPayload): "start" | "end" | undefined {
+        if (!anchor || !selection) {
+            return undefined;
+        }
+        const lineHitTolerancePx: number = Math.max(this.getSelectionLineWidthPx() * 1.5, 12);
+        const matchesStartSystem: boolean = anchor.systemIndex === selection.normalizedStart.systemIndex;
+        const matchesEndSystem: boolean = anchor.systemIndex === selection.normalizedEnd.systemIndex;
+        const startDistancePx: number = Math.abs(anchor.xPx - selection.normalizedStart.xPx);
+        const endDistancePx: number = Math.abs(anchor.xPx - selection.normalizedEnd.xPx);
+        const nearStartLine: boolean = matchesStartSystem && startDistancePx <= lineHitTolerancePx;
+        const nearEndLine: boolean = matchesEndSystem && endDistancePx <= lineHitTolerancePx;
+        if (!nearStartLine && !nearEndLine) {
+            return undefined;
+        }
+        if (nearStartLine && nearEndLine) {
+            return startDistancePx <= endDistancePx ? "start" : "end";
+        }
+        return nearStartLine ? "start" : "end";
+    }
+
+    private applySelectionPadding(selection: RangeSelectionPayload, movedBound: "start" | "end" | "both" = "both"): RangeSelectionPayload {
+        if (!selection) {
+            return selection;
+        }
+        const paddingPx: number = this.interactiveRangeSelectionOptions.applyPaddingPx ?? 0;
+        if (!Number.isFinite(paddingPx) || paddingPx <= 0) {
+            return selection;
+        }
+        const paddedStart: RangeSelectionAnchor = movedBound === "end"
+            ? selection.normalizedStart
+            : this.shiftAnchorX(selection.normalizedStart, -paddingPx);
+        const paddedEnd: RangeSelectionAnchor = movedBound === "start"
+            ? selection.normalizedEnd
+            : this.shiftAnchorX(selection.normalizedEnd, paddingPx);
+        return this.createSelectionPayload(selection.phase, paddedStart, paddedEnd, selection.isDragging);
+    }
+
+    private shiftAnchorX(anchor: RangeSelectionAnchor, deltaPx: number): RangeSelectionAnchor {
+        if (!anchor || !this.graphic) {
+            return anchor;
+        }
+        const system: MusicSystem = this.findSystemByIndex(anchor.systemIndex);
+        if (!system) {
+            return anchor;
+        }
+        const horizontalBounds: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
+        const shiftedXPx: number = Math.min(horizontalBounds.rightPx, Math.max(horizontalBounds.leftPx, anchor.xPx + deltaPx));
+        const startTime: Fraction = system.GetSystemsFirstTimeStamp();
+        const endTime: Fraction = system.GetSystemsLastTimeStamp();
+        const widthPx: number = Math.max(1, horizontalBounds.rightPx - horizontalBounds.leftPx);
+        const ratio: number = (shiftedXPx - horizontalBounds.leftPx) / widthPx;
+        const timestampReal: number = startTime.RealValue + (endTime.RealValue - startTime.RealValue) * ratio;
+        return {
+            ...anchor,
+            timestamp: new Fraction(timestampReal, 1),
+            timestampReal,
+            xPx: shiftedXPx,
+            x: shiftedXPx / (this.zoom * 10.0)
+        };
+    }
+
+    private findSystemByIndex(targetIndex: number): MusicSystem {
+        if (!this.graphic || targetIndex < 0) {
+            return undefined;
+        }
+        let index: number = 0;
+        for (const page of this.graphic.MusicPages) {
+            for (const system of page.MusicSystems) {
+                if (index === targetIndex) {
+                    return system;
+                }
+                index++;
+            }
+        }
+        return undefined;
+    }
+
+    private createSelectionPayload(
+        phase: "hover" | "dragging" | "committed" | "cleared",
+        start: RangeSelectionAnchor,
+        end: RangeSelectionAnchor,
+        isDragging: boolean
+    ): RangeSelectionPayload {
+        const normalizedStart: RangeSelectionAnchor = start.timestampReal <= end.timestampReal ? start : end;
+        const normalizedEnd: RangeSelectionAnchor = normalizedStart === start ? end : start;
+        const direction: RangeSelectionDirection = start.timestampReal <= end.timestampReal ? "forward" : "backward";
+        return {
+            phase,
+            direction,
+            start,
+            end,
+            normalizedStart,
+            normalizedEnd,
+            isDragging
+        };
+    }
+
+    private emitRangeSelection(
+        phase: "hover" | "dragging" | "committed" | "cleared",
+        start: RangeSelectionAnchor,
+        end: RangeSelectionAnchor,
+        isDragging: boolean
+    ): void {
+        if (!this.OnRangeSelectionChange || !start || !end) {
+            return;
+        }
+        this.OnRangeSelectionChange(this.createSelectionPayload(phase, start, end, isDragging));
+    }
+
+    private renderRangeSelection(): void {
+        if (!this.rangeInteractionOverlay) {
+            return;
+        }
+        this.rangeInteractionOverlay.innerHTML = "";
+        this.applyNoteOpacityForCurrentSelection();
+        const hideSelectionVisuals: boolean = this.shouldHideSelectionRangeVisuals();
+        if (this.dragStartAnchor && this.dragCurrentAnchor) {
+            if (!hideSelectionVisuals && (this.isRangeDragging || this.shouldShowCommittedRangeFill())) {
+                this.renderSelectionRangeOverlay(this.dragStartAnchor, this.dragCurrentAnchor);
+            }
+            if (!hideSelectionVisuals) {
+                this.renderVerticalLine(this.dragStartAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
+                this.renderVerticalLine(this.dragCurrentAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
+            }
+            if (!hideSelectionVisuals && !this.isRangeDragging) {
+                const currentSelection: RangeSelectionPayload = this.getRangeSelection();
+                this.renderRangeActionButtons(currentSelection);
+            }
+            return;
+        }
+        if (!hideSelectionVisuals && !this.isRangeDragging && this.hoverAnchor) {
+            this.renderVerticalLine(this.hoverAnchor, this.getSelectionLineColor(), 2);
+        }
+    }
+
+    private renderSelectionRangeOverlay(start: RangeSelectionAnchor, end: RangeSelectionAnchor): void {
+        if (!this.graphic) {
+            return;
+        }
+        const selection: RangeSelectionPayload = this.createSelectionPayload("dragging", start, end, this.isRangeDragging);
+        const firstAnchor: RangeSelectionAnchor = selection.normalizedStart;
+        const lastAnchor: RangeSelectionAnchor = selection.normalizedEnd;
+        const selectedFill: string = this.interactiveRangeSelectionOptions.fillColor ?? "rgba(47, 169, 224, 0.25)";
+        for (const page of this.graphic.MusicPages) {
+            for (const system of page.MusicSystems) {
+                const systemIndex: number = this.getSystemIndex(system);
+                if (systemIndex < firstAnchor.systemIndex || systemIndex > lastAnchor.systemIndex) {
+                    continue;
+                }
+                const horizontal: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
+                const vertical: { yPx: number, heightPx: number } = this.getSystemVerticalBoundsInPixels(system);
+                let selectionLeft: number = horizontal.leftPx;
+                let selectionRight: number = horizontal.rightPx;
+                if (systemIndex === firstAnchor.systemIndex) {
+                    selectionLeft = firstAnchor.xPx;
+                }
+                if (systemIndex === lastAnchor.systemIndex) {
+                    selectionRight = lastAnchor.xPx;
+                }
+                if (firstAnchor.systemIndex === lastAnchor.systemIndex) {
+                    selectionLeft = Math.min(firstAnchor.xPx, lastAnchor.xPx);
+                    selectionRight = Math.max(firstAnchor.xPx, lastAnchor.xPx);
+                }
+                selectionLeft = Math.max(horizontal.leftPx, selectionLeft);
+                selectionRight = Math.min(horizontal.rightPx, selectionRight);
+                if (selectionRight < selectionLeft) {
+                    const temp: number = selectionLeft;
+                    selectionLeft = selectionRight;
+                    selectionRight = temp;
+                }
+                this.renderRectangle(selectionLeft, vertical.yPx, Math.max(1, selectionRight - selectionLeft), vertical.heightPx, selectedFill);
+            }
+        }
+    }
+
+    private renderVerticalLine(anchor: RangeSelectionAnchor, color: string, widthPx: number): void {
+        const line: HTMLDivElement = document.createElement("div");
+        line.style.position = "absolute";
+        line.style.left = `${anchor.xPx - widthPx / 2}px`;
+        line.style.top = `${anchor.yPx}px`;
+        line.style.width = `${widthPx}px`;
+        line.style.height = `${anchor.heightPx}px`;
+        line.style.borderRadius = "999px";
+        line.style.backgroundColor = color;
+        this.rangeInteractionOverlay.appendChild(line);
+    }
+
+    private renderRectangle(leftPx: number, topPx: number, widthPx: number, heightPx: number, color: string): void {
+        if (widthPx <= 0 || heightPx <= 0) {
+            return;
+        }
+        const rect: HTMLDivElement = document.createElement("div");
+        rect.style.position = "absolute";
+        rect.style.left = `${leftPx}px`;
+        rect.style.top = `${topPx}px`;
+        rect.style.width = `${widthPx}px`;
+        rect.style.height = `${heightPx}px`;
+        rect.style.backgroundColor = color;
+        this.rangeInteractionOverlay.appendChild(rect);
+    }
+
+    private renderRangeActionButtons(selection: RangeSelectionPayload): void {
+        if (!selection || !this.OnRangeSelectionControlsRender) {
+            return;
+        }
+        const buttonsContainer: HTMLDivElement = document.createElement("div");
+        buttonsContainer.style.position = "absolute";
+        buttonsContainer.style.pointerEvents = "auto";
+        buttonsContainer.style.display = "flex";
+        buttonsContainer.style.flexDirection = "column";
+        buttonsContainer.style.gap = "6px";
+        buttonsContainer.style.zIndex = "9";
+
+        const leftMostXPx: number = Math.min(selection.normalizedStart.xPx, selection.normalizedEnd.xPx);
+        const topMostYPx: number = Math.min(selection.normalizedStart.yPx, selection.normalizedEnd.yPx);
+        buttonsContainer.style.left = `${Math.max(8, leftMostXPx - 40)}px`;
+        buttonsContainer.style.top = `${Math.max(8, topMostYPx)}px`;
+
+        this.OnRangeSelectionControlsRender(buttonsContainer, selection);
+        if (buttonsContainer.childElementCount > 0) {
+            this.rangeInteractionOverlay.appendChild(buttonsContainer);
+        }
+    }
+
+    private getSelectionLineColor(): string {
+        return this.interactiveRangeSelectionOptions.lineColor ?? "rgba(47, 169, 224, 0.95)";
+    }
+
+    private getSelectionLineWidthPx(): number {
+        return this.interactiveRangeSelectionOptions.lineWidthPx ?? 12;
+    }
+
+    private shouldHideSelectionRangeVisuals(): boolean {
+        return this.interactiveRangeSelectionOptions.hideSelectionRange === true;
+    }
+
+    private getSelectionOverlayZIndex(): number {
+        return this.interactiveRangeSelectionOptions.overlayZIndex ?? 8;
+    }
+
+    private selectionHasAnyNotes(start: RangeSelectionAnchor, end: RangeSelectionAnchor): boolean {
+        if (!this.sheet || !start || !end || !this.graphic) {
+            return false;
+        }
+        const selection: RangeSelectionPayload = this.createSelectionPayload("committed", start, end, false);
+        const segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }> = this.getSelectionSegments(selection);
+        for (const instrument of this.sheet.Instruments) {
+            for (const staff of instrument.Staves) {
+                for (const voice of staff.Voices) {
+                    for (const voiceEntry of voice.VoiceEntries) {
+                        for (const note of voiceEntry.Notes) {
+                            if (note.isRest()) {
+                                continue;
+                            }
+                            const graphicalNote: GraphicalNote = this.rules.GNote(note);
+                            if (!graphicalNote) {
+                                continue;
+                            }
+                            const noteSystemIndex: number = this.getSystemIndexForGraphicalNote(graphicalNote);
+                            const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
+                            if (this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private shouldGrayOutNonSelectedNotes(): boolean {
+        return this.interactiveRangeSelectionOptions.grayOutNonSelectedNotes !== false;
+    }
+
+    private getNonSelectedNotesOpacity(): number {
+        return this.interactiveRangeSelectionOptions.nonSelectedNotesOpacity ?? 0.28;
+    }
+
+    private shouldShowCommittedRangeFill(): boolean {
+        return this.interactiveRangeSelectionOptions.showCommittedRangeFill === true;
+    }
+
+    private applyNoteOpacityForCurrentSelection(): void {
+        if (!this.sheet || !this.graphic || !this.shouldGrayOutNonSelectedNotes()) {
+            this.resetRangeSelectionNoteOpacity();
+            return;
+        }
+        if (!this.dragStartAnchor || !this.dragCurrentAnchor) {
+            this.resetRangeSelectionNoteOpacity();
+            return;
+        }
+        const selection: RangeSelectionPayload = this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, this.isRangeDragging);
+        const segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }> = this.getSelectionSegments(selection);
+        const nonSelectedOpacity: number = this.getNonSelectedNotesOpacity();
+
+        for (const instrument of this.sheet.Instruments) {
+            for (const staff of instrument.Staves) {
+                for (const voice of staff.Voices) {
+                    for (const voiceEntry of voice.VoiceEntries) {
+                        for (const note of voiceEntry.Notes) {
+                            const graphicalNote: GraphicalNote = this.rules.GNote(note);
+                            if (!graphicalNote) {
+                                continue;
+                            }
+                            const noteSystemIndex: number = this.getSystemIndexForGraphicalNote(graphicalNote);
+                            const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
+                            if (!this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
+                                graphicalNote.setOpacity(nonSelectedOpacity);
+                            } else {
+                                graphicalNote.setOpacity(1.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        this.applyStaffEntryElementOpacityForSelection(segments, nonSelectedOpacity);
+        this.applyTupletOpacityForSelection(segments, nonSelectedOpacity);
+    }
+
+    private resetRangeSelectionNoteOpacity(): void {
+        if (!this.sheet || !this.graphic) {
+            return;
+        }
+        for (const instrument of this.sheet.Instruments) {
+            for (const staff of instrument.Staves) {
+                for (const voice of staff.Voices) {
+                    for (const voiceEntry of voice.VoiceEntries) {
+                        for (const note of voiceEntry.Notes) {
+                            const graphicalNote: GraphicalNote = this.rules.GNote(note);
+                            if (graphicalNote) {
+                                graphicalNote.setOpacity(1.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        this.resetStaffEntryElementOpacity();
+        this.resetTupletOpacity();
+    }
+
+    private applyStaffEntryElementOpacityForSelection(
+        segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }>,
+        nonSelectedOpacity: number
+    ): void {
+        if (!this.graphic) {
+            return;
+        }
+        for (const verticalContainer of this.graphic.VerticalGraphicalStaffEntryContainers) {
+            for (const staffEntry of verticalContainer?.StaffEntries ?? []) {
+                if (!staffEntry) {
+                    continue;
+                }
+                const systemIndex: number = this.getSystemIndex(staffEntry.parentMeasure?.ParentMusicSystem);
+                const entryXPx: number = staffEntry.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
+                const opacity: number = this.isXInSelection(systemIndex, entryXPx, segments) ? 1.0 : nonSelectedOpacity;
+                for (const lyricsEntry of staffEntry.LyricsEntries ?? []) {
+                    this.setGraphicalLabelOpacity(lyricsEntry?.GraphicalLabel, opacity);
+                }
+                for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
+                    this.setGraphicalLabelOpacity(fingeringEntry, opacity);
+                }
+                for (const chordContainer of staffEntry.graphicalChordContainers ?? []) {
+                    this.setGraphicalLabelOpacity(chordContainer?.GraphicalLabel, opacity);
+                }
+            }
+        }
+    }
+
+    private resetStaffEntryElementOpacity(): void {
+        if (!this.graphic) {
+            return;
+        }
+        for (const verticalContainer of this.graphic.VerticalGraphicalStaffEntryContainers) {
+            for (const staffEntry of verticalContainer?.StaffEntries ?? []) {
+                if (!staffEntry) {
+                    continue;
+                }
+                for (const lyricsEntry of staffEntry.LyricsEntries ?? []) {
+                    this.setGraphicalLabelOpacity(lyricsEntry?.GraphicalLabel, 1.0);
+                }
+                for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
+                    this.setGraphicalLabelOpacity(fingeringEntry, 1.0);
+                }
+                for (const chordContainer of staffEntry.graphicalChordContainers ?? []) {
+                    this.setGraphicalLabelOpacity(chordContainer?.GraphicalLabel, 1.0);
+                }
+            }
+        }
+    }
+
+    private setGraphicalLabelOpacity(label: GraphicalLabel, opacity: number): void {
+        if (!label?.SVGNode) {
+            return;
+        }
+        const labelNode: Element = label.SVGNode as Element;
+        labelNode.setAttribute("opacity", opacity.toString());
+    }
+
+    private getSystemIndexForGraphicalNote(graphicalNote: GraphicalNote): number {
+        const system: MusicSystem = graphicalNote?.parentVoiceEntry?.parentStaffEntry?.parentMeasure?.ParentMusicSystem;
+        return this.getSystemIndex(system);
+    }
+
+    private getSelectionSegments(
+        selection: RangeSelectionPayload
+    ): Array<{ systemIndex: number, leftPx: number, rightPx: number }> {
+        const segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }> = [];
+        if (!this.graphic || !selection) {
+            return segments;
+        }
+        for (const page of this.graphic.MusicPages) {
+            for (const system of page.MusicSystems) {
+                const systemIndex: number = this.getSystemIndex(system);
+                if (systemIndex < selection.normalizedStart.systemIndex || systemIndex > selection.normalizedEnd.systemIndex) {
+                    continue;
+                }
+                const horizontal: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
+                let leftPx: number = horizontal.leftPx;
+                let rightPx: number = horizontal.rightPx;
+                if (systemIndex === selection.normalizedStart.systemIndex) {
+                    leftPx = selection.normalizedStart.xPx;
+                }
+                if (systemIndex === selection.normalizedEnd.systemIndex) {
+                    rightPx = selection.normalizedEnd.xPx;
+                }
+                leftPx = Math.max(horizontal.leftPx, leftPx);
+                rightPx = Math.min(horizontal.rightPx, rightPx);
+                if (rightPx < leftPx) {
+                    const temp: number = leftPx;
+                    leftPx = rightPx;
+                    rightPx = temp;
+                }
+                segments.push({ systemIndex, leftPx, rightPx });
+            }
+        }
+        return segments;
+    }
+
+    private isXInSelection(
+        systemIndex: number,
+        xPx: number,
+        segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }>
+    ): boolean {
+        if (systemIndex < 0) {
+            return false;
+        }
+        for (const segment of segments) {
+            if (segment.systemIndex !== systemIndex) {
+                continue;
+            }
+            if (xPx >= segment.leftPx && xPx <= segment.rightPx) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private applyTupletOpacityForSelection(
+        segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }>,
+        nonSelectedOpacity: number
+    ): void {
+        const tupletElements: SVGGraphicsElement[] = this.getTupletElements();
+        const containerRect: DOMRect = this.container.getBoundingClientRect();
+        for (const element of tupletElements) {
+            const elementRect: DOMRect = element.getBoundingClientRect();
+            const centerXPx: number = (elementRect.left - containerRect.left) + (elementRect.width / 2);
+            const centerYPx: number = (elementRect.top - containerRect.top) + (elementRect.height / 2);
+            const system: MusicSystem = this.findSystemAtPosition(new PointF2D(centerXPx / (this.zoom * 10.0), centerYPx / (this.zoom * 10.0)));
+            const systemIndex: number = this.getSystemIndex(system);
+            const opacity: number = this.isXInSelection(systemIndex, centerXPx, segments) ? 1.0 : nonSelectedOpacity;
+            element.setAttribute("opacity", opacity.toString());
+        }
+    }
+
+    private resetTupletOpacity(): void {
+        const tupletElements: SVGGraphicsElement[] = this.getTupletElements();
+        for (const element of tupletElements) {
+            element.setAttribute("opacity", "1");
+        }
+    }
+
+    private getTupletElements(): SVGGraphicsElement[] {
+        const elementSet: Set<SVGGraphicsElement> = new Set<SVGGraphicsElement>();
+        const selectors: string[] = [
+            ".vf-tuplet",
+            ".vf-tupletnum",
+            ".vf-tuplet-bracket",
+            ".vf-stavetie.vf-tuplet",
+            "[class*='tuplet']"
+        ];
+        for (const backend of this.drawer?.Backends ?? []) {
+            const renderRoot: HTMLElement = backend.getRenderElement();
+            if (!renderRoot) {
+                continue;
+            }
+            for (const selector of selectors) {
+                const matches: NodeListOf<SVGGraphicsElement> = renderRoot.querySelectorAll<SVGGraphicsElement>(selector);
+                for (const match of matches) {
+                    elementSet.add(match);
+                }
+            }
+        }
+        return Array.from(elementSet);
     }
 
     private setStaffOpacity(staffIndex: number, opacity: number, fallbackOpacity: number): void {
