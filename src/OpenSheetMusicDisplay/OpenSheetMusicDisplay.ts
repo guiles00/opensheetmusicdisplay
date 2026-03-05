@@ -1560,6 +1560,7 @@ export class OpenSheetMusicDisplay {
         this.ensureRangeSelectionOverlay();
         this.updateRangeSelectionOverlayStyles();
         this.attachRangeSelectionListeners();
+        this.renderRangeSelection();
     }
 
     private attachRangeSelectionListeners(): void {
@@ -2352,6 +2353,16 @@ export class OpenSheetMusicDisplay {
         if (!selection) {
             return selection;
         }
+        // Snap-to-notes: align selection boundaries to nearest note positions
+        if (this.interactiveRangeSelectionOptions.snapToNotes && this.graphic) {
+            const snappedStart: RangeSelectionAnchor = movedBound === "end"
+                ? selection.normalizedStart
+                : this.snapAnchorToNearestNote(selection.normalizedStart, "start");
+            const snappedEnd: RangeSelectionAnchor = movedBound === "start"
+                ? selection.normalizedEnd
+                : this.snapAnchorToNearestNote(selection.normalizedEnd, "end");
+            return this.createSelectionPayload(selection.phase, snappedStart, snappedEnd, selection.isDragging);
+        }
         const paddingPx: number = this.interactiveRangeSelectionOptions.applyPaddingPx ?? 0;
         if (!Number.isFinite(paddingPx) || paddingPx <= 0) {
             return selection;
@@ -2363,6 +2374,98 @@ export class OpenSheetMusicDisplay {
             ? selection.normalizedEnd
             : this.shiftAnchorX(selection.normalizedEnd, paddingPx);
         return this.createSelectionPayload(selection.phase, paddedStart, paddedEnd, selection.isDragging);
+    }
+
+    /**
+     * Snap an anchor to the nearest GraphicalStaffEntry note position.
+     * For "start" bound: snap to the first note at or after the anchor's timestamp.
+     * For "end" bound: snap to the last note at or before the anchor's timestamp.
+     */
+    private snapAnchorToNearestNote(anchor: RangeSelectionAnchor, bound: "start" | "end"): RangeSelectionAnchor {
+        if (!anchor || !this.graphic) {
+            return anchor;
+        }
+        const scale: number = this.zoom * 10.0;
+        let bestEntry: GraphicalStaffEntry = undefined;
+        let bestSystemIndex: number = -1;
+        let bestXPx: number = bound === "start" ? Number.MAX_VALUE : Number.MIN_VALUE;
+        let systemIndex: number = 0;
+        for (const page of this.graphic.MusicPages) {
+            for (const musicSystem of page.MusicSystems) {
+                for (const staffLine of musicSystem.StaffLines) {
+                    for (const measure of staffLine.Measures) {
+                        for (const entry of measure.staffEntries) {
+                            // Check if entry has playable notes (not just rests)
+                            const hasNotes: boolean = entry.sourceStaffEntry?.VoiceEntries?.some(
+                                (ve: any) => ve.Notes?.some((n: any) => !n.isRest())
+                            ) ?? false;
+                            if (!hasNotes) {
+                                continue;
+                            }
+                            const candidateX: number = entry.PositionAndShape?.AbsolutePosition?.x;
+                            if (typeof candidateX !== "number" || !Number.isFinite(candidateX)) {
+                                continue;
+                            }
+                            const candidateXPx: number = candidateX * scale;
+                            // Use xPx + systemIndex matching (same criteria as gray-out logic)
+                            if (bound === "start") {
+                                // Find first note at or after anchor xPx (in same system) or in later system
+                                const isAfterAnchor: boolean = systemIndex > anchor.systemIndex
+                                    || (systemIndex === anchor.systemIndex && candidateXPx >= anchor.xPx - 1);
+                                const isBetterThanBest: boolean = bestEntry === undefined
+                                    || systemIndex < bestSystemIndex
+                                    || (systemIndex === bestSystemIndex && candidateXPx < bestXPx);
+                                if (isAfterAnchor && isBetterThanBest) {
+                                    bestEntry = entry;
+                                    bestSystemIndex = systemIndex;
+                                    bestXPx = candidateXPx;
+                                }
+                            } else {
+                                // Find last note at or before anchor xPx (in same system) or in earlier system
+                                const isBeforeAnchor: boolean = systemIndex < anchor.systemIndex
+                                    || (systemIndex === anchor.systemIndex && candidateXPx <= anchor.xPx + 1);
+                                const isBetterThanBest: boolean = bestEntry === undefined
+                                    || systemIndex > bestSystemIndex
+                                    || (systemIndex === bestSystemIndex && candidateXPx > bestXPx);
+                                if (isBeforeAnchor && isBetterThanBest) {
+                                    bestEntry = entry;
+                                    bestSystemIndex = systemIndex;
+                                    bestXPx = candidateXPx;
+                                }
+                            }
+                        }
+                    }
+                }
+                systemIndex++;
+            }
+        }
+        if (!bestEntry) {
+            return anchor;
+        }
+        const entryX: number = bestEntry.PositionAndShape?.AbsolutePosition?.x ?? anchor.x;
+        const entryXPx: number = entryX * scale;
+        // Shift xPx 18px outward so handles, fill, and gray-out all agree visually
+        const snapMarginPx: number = bound === "start" ? -18 : 18;
+        const snappedXPx: number = entryXPx + snapMarginPx;
+        const snappedX: number = snappedXPx / scale;
+        const entryTimestamp: number = bestEntry.getAbsoluteTimestamp()?.RealValue ?? anchor.timestampReal;
+        const system: MusicSystem = bestEntry.parentMeasure?.ParentMusicSystem
+            ?? this.findSystemByIndex(anchor.systemIndex);
+        const lineBounds: { yPx: number, heightPx: number } = system
+            ? this.getSystemVerticalBoundsInPixels(system)
+            : { yPx: anchor.yPx, heightPx: anchor.heightPx };
+        return {
+            timestamp: new Fraction(entryTimestamp, 1),
+            timestampReal: entryTimestamp,
+            measureIndex: bestEntry.parentMeasure?.parentSourceMeasure?.measureListIndex ?? anchor.measureIndex,
+            systemIndex: system ? this.getSystemIndex(system) : anchor.systemIndex,
+            pageNumber: system?.Parent?.PageNumber ?? anchor.pageNumber,
+            staffIndex: bestEntry.sourceStaffEntry?.ParentStaff?.idInMusicSheet ?? anchor.staffIndex,
+            x: snappedX,
+            xPx: snappedXPx,
+            yPx: lineBounds.yPx,
+            heightPx: lineBounds.heightPx,
+        };
     }
 
     private shiftAnchorX(anchor: RangeSelectionAnchor, deltaPx: number): RangeSelectionAnchor {
@@ -2457,8 +2560,9 @@ export class OpenSheetMusicDisplay {
                 this.renderSelectionRangeOverlay(this.dragStartAnchor, this.dragCurrentAnchor);
             }
             if (!hideSelectionVisuals) {
-                this.renderVerticalLine(this.dragStartAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
-                this.renderVerticalLine(this.dragCurrentAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
+                const lineWidthPx: number = this.getSelectionLineWidthPx();
+                this.renderVerticalLine(this.dragStartAnchor, this.getSelectionLineColor(), lineWidthPx);
+                this.renderVerticalLine(this.dragCurrentAnchor, this.getSelectionLineColor(), lineWidthPx);
             }
             if (!hideSelectionVisuals && !this.isRangeDragging) {
                 const currentSelection: RangeSelectionPayload = this.getRangeSelection();
@@ -2531,7 +2635,7 @@ export class OpenSheetMusicDisplay {
         }
     }
 
-    private renderVerticalLine(anchor: RangeSelectionAnchor, color: string, widthPx: number): void {
+    private renderVerticalLine(anchor: RangeSelectionAnchor, color: string, widthPx: number, visualOffsetPx: number = 0): void {
         const line: HTMLDivElement = document.createElement("div");
         const overlayHeight: number = this.rangeInteractionOverlay?.clientHeight ?? 0;
         let topPx: number = anchor.yPx;
@@ -2548,7 +2652,7 @@ export class OpenSheetMusicDisplay {
             heightPx = Math.max(1, Math.min(heightPx, overlayHeight - topPx));
         }
         line.style.position = "absolute";
-        line.style.left = `${anchor.xPx - widthPx / 2}px`;
+        line.style.left = `${anchor.xPx + visualOffsetPx - widthPx / 2}px`;
         line.style.top = `${topPx}px`;
         line.style.width = `${widthPx}px`;
         line.style.height = `${heightPx}px`;
@@ -2889,7 +2993,10 @@ export class OpenSheetMusicDisplay {
             if (segment.systemIndex !== systemIndex) {
                 continue;
             }
-            if (xPx >= segment.leftPx && xPx <= segment.rightPx) {
+            // Small tolerance to prevent boundary notes from being excluded
+            // due to floating-point differences between graphicalNote.x and entry.x
+            const tolerancePx: number = 0;
+            if (xPx >= segment.leftPx - tolerancePx && xPx <= segment.rightPx + tolerancePx) {
                 return true;
             }
         }
@@ -2906,6 +3013,12 @@ export class OpenSheetMusicDisplay {
         const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
         if (this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
             return true;
+        }
+        // When snapToNotes is on, xPx is the authoritative boundary.
+        // Don't fall back to timestamp — it re-includes notes at measure boundaries
+        // that xPx correctly excluded.
+        if (this.interactiveRangeSelectionOptions.snapToNotes) {
+            return false;
         }
         const noteTimestampReal: number = this.getAbsoluteTimestampRealForNote(note);
         return this.isTimestampRealInSelection(noteTimestampReal, selection);

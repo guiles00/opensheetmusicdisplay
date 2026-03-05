@@ -12,6 +12,7 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
     var sampleFolder = "",
         samples = {
             // "Summer Time": "summertime.musicxml",
+            "Clementi, M. - Sonatina Op.36 No.1 Pt.1": "MuzioClementi_SonatinaOpus36No1_Part1.xml",
             "Fingerings are oddly positioned": "1168-3.musicxml",
             "Chords but the chords are weirdly positioned": "836.musicxml",
             "Rests in weird places": "2239-2.musicxml",
@@ -20,7 +21,6 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
             "Sample 2": "1346 2.musicxml",
             "Sample": "1346.musicxml",
             "Beethoven, L.v. - An die ferne Geliebte": "Beethoven_AnDieFerneGeliebte.xml",
-            "Clementi, M. - Sonatina Op.36 No.1 Pt.1": "MuzioClementi_SonatinaOpus36No1_Part1.xml",
             "Clementi, M. - Sonatina Op.36 No.1 Pt.2": "MuzioClementi_SonatinaOpus36No1_Part2.xml",
             "Clementi, M. - Sonatina Op.36 No.3 Pt.1": "MuzioClementi_SonatinaOpus36No3_Part1.xml",
             "Clementi, M. - Sonatina Op.36 No.3 Pt.2": "MuzioClementi_SonatinaOpus36No3_Part2.xml",
@@ -742,7 +742,8 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
                 outsideMaskColor: "rgba(0, 0, 0, 0.20)",
                 lineWidthPx: 12,
                 hideSelectionRange: isSelectionRangeHidden,
-                overlayZIndex: 4
+                overlayZIndex: 4,
+                snapToNotes: true,
             },
             onRangeSelectionChange: function (payload) {
                 if (!payload) {

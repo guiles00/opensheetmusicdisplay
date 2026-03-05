@@ -35,6 +35,7 @@ export interface InteractiveRangeSelectionOptions {
     lineWidthPx?: number;
     outsideMaskOpacity?: number;
     applyPaddingPx?: number;
+    snapToNotes?: boolean;
     loopButtonLabel?: string;
     clearButtonLabel?: string;
     grayOutNonSelectedNotes?: boolean;
