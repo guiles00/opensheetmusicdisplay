@@ -29,6 +29,7 @@ export interface RangeSelectionPayload {
 export interface InteractiveRangeSelectionOptions {
     enabled?: boolean;
     lineColor?: string;
+    showHoverLine?: boolean;
     fillColor?: string;
     outsideMaskColor?: string;
     lineWidthPx?: number;

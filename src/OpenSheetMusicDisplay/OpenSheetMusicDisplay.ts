@@ -2470,7 +2470,7 @@ export class OpenSheetMusicDisplay {
             this.renderVerticalLine(this.pendingTouchRangeStartAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
             return;
         }
-        if (!hideSelectionVisuals && !this.isRangeDragging && this.hoverAnchor) {
+        if (!hideSelectionVisuals && this.shouldShowHoverLine() && !this.isRangeDragging && this.hoverAnchor) {
             this.renderVerticalLine(this.hoverAnchor, this.getSelectionLineColor(), 2);
         }
     }
@@ -2604,6 +2604,10 @@ export class OpenSheetMusicDisplay {
 
     private shouldHideSelectionRangeVisuals(): boolean {
         return this.interactiveRangeSelectionOptions.hideSelectionRange === true;
+    }
+
+    private shouldShowHoverLine(): boolean {
+        return this.interactiveRangeSelectionOptions.showHoverLine !== false;
     }
 
     private getSelectionOverlayZIndex(): number {
