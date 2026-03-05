@@ -123,6 +123,7 @@ export class OpenSheetMusicDisplay {
     public OnRangeSelectionLoopRequest: (payload: RangeSelectionPayload) => void;
     public OnRangeSelectionClearRequest: (payload: RangeSelectionPayload) => void;
     public OnRangeSelectionControlsRender: (container: HTMLDivElement, payload: RangeSelectionPayload) => void;
+    public OnRangeHandleDraggingChange: (isHandleDragging: boolean) => void;
     private interactiveRangeSelectionEnabled: boolean = false;
     private interactiveRangeSelectionOptions: InteractiveRangeSelectionOptions = {};
     private rangeInteractionOverlay: HTMLDivElement;
@@ -151,6 +152,7 @@ export class OpenSheetMusicDisplay {
     private activeTouchDragClientY: number = 0;
     private touchDragScrollLockEnabled: boolean = false;
     private touchDragNativeScrollSuppressed: boolean = false;
+    private isRangeHandleDragging: boolean = false;
     private touchPendingAction: "none" | "setOrCommit" | "clearSelection" = "none";
     private readonly rangePointerMoveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerMove(event);
     private readonly rangePointerDownListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerDown(event);
@@ -553,6 +555,7 @@ export class OpenSheetMusicDisplay {
         this.pendingTouchRangeStartAnchor = undefined;
         this.activeDragBound = "both";
         this.isRangeDragging = false;
+        this.emitRangeHandleDragging(false);
         this.resetTouchGestureState();
         this.renderRangeSelection();
         if (emitCallback && hadSelection && startAnchor && endAnchor) {
@@ -600,6 +603,9 @@ export class OpenSheetMusicDisplay {
         }
         if ("onRangeSelectionControlsRender" in options) {
             this.OnRangeSelectionControlsRender = options.onRangeSelectionControlsRender;
+        }
+        if ("onRangeHandleDraggingChange" in options) {
+            this.OnRangeHandleDraggingChange = options.onRangeHandleDraggingChange;
         }
         if (options.interactiveRangeSelection !== undefined) {
             this.interactiveRangeSelectionEnabled = options.interactiveRangeSelection;
@@ -1583,6 +1589,7 @@ export class OpenSheetMusicDisplay {
         this.stopTouchDragAutoScroll();
         this.setTouchDragScrollLockEnabled(false);
         this.setTouchDragNativeScrollSuppressed(false);
+        this.emitRangeHandleDragging(false);
         this.releaseRangeDragPointerCapture();
         if (this.rangePointerMoveAnimationFrameId !== 0) {
             window.cancelAnimationFrame(this.rangePointerMoveAnimationFrameId);
@@ -1733,6 +1740,7 @@ export class OpenSheetMusicDisplay {
                     this.dragStartAnchor = existingSelection.normalizedStart;
                 }
                 this.dragCurrentAnchor = anchor;
+                this.emitRangeHandleDragging(true);
                 this.renderRangeSelection();
                 this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
                 event.preventDefault();
@@ -1772,6 +1780,7 @@ export class OpenSheetMusicDisplay {
             this.dragStartAnchor = anchor;
             this.dragCurrentAnchor = anchor;
         }
+        this.emitRangeHandleDragging(this.activeDragBound !== "both");
         this.renderRangeSelection();
         this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
         event.preventDefault();
@@ -1908,6 +1917,7 @@ export class OpenSheetMusicDisplay {
         this.dragCurrentAnchor = paddedSelection.normalizedEnd;
         this.pendingTouchRangeStartAnchor = undefined;
         this.activeDragBound = "both";
+        this.emitRangeHandleDragging(false);
         if (!this.selectionHasAnyNotes(this.dragStartAnchor, this.dragCurrentAnchor)) {
             this.clearRangeSelection(true);
             return;
@@ -1922,6 +1932,7 @@ export class OpenSheetMusicDisplay {
         anchor: RangeSelectionAnchor
     ): void {
         this.isRangeDragging = true;
+        this.emitRangeHandleDragging(true);
         this.setTouchDragScrollLockEnabled(true);
         this.setTouchDragNativeScrollSuppressed(true);
         this.startTouchDragAutoScroll();
@@ -2011,9 +2022,18 @@ export class OpenSheetMusicDisplay {
         }
         this.touchDragNativeScrollSuppressed = enabled;
         if (enabled) {
-            window.addEventListener("touchmove", this.touchMoveDuringRangeDragListener, { passive: false });
+            // iOS Safari/WKWebView can keep panning unless touchmove is cancelled in capture phase.
+            document.addEventListener("touchmove", this.touchMoveDuringRangeDragListener, { passive: false, capture: true });
+            window.addEventListener("touchmove", this.touchMoveDuringRangeDragListener, { passive: false, capture: true });
+            for (const element of this.rangeInteractionBoundElements) {
+                element.addEventListener("touchmove", this.touchMoveDuringRangeDragListener, { passive: false, capture: true });
+            }
         } else {
-            window.removeEventListener("touchmove", this.touchMoveDuringRangeDragListener);
+            document.removeEventListener("touchmove", this.touchMoveDuringRangeDragListener, true);
+            window.removeEventListener("touchmove", this.touchMoveDuringRangeDragListener, true);
+            for (const element of this.rangeInteractionBoundElements) {
+                element.removeEventListener("touchmove", this.touchMoveDuringRangeDragListener, true);
+            }
         }
     }
 
@@ -2022,6 +2042,17 @@ export class OpenSheetMusicDisplay {
             return;
         }
         event.preventDefault();
+        event.stopPropagation();
+    }
+
+    private emitRangeHandleDragging(isHandleDragging: boolean): void {
+        if (this.isRangeHandleDragging === isHandleDragging) {
+            return;
+        }
+        this.isRangeHandleDragging = isHandleDragging;
+        if (this.OnRangeHandleDraggingChange) {
+            this.OnRangeHandleDraggingChange(isHandleDragging);
+        }
     }
 
     private updateDesktopRangeCursor(event: PointerEvent, anchor: RangeSelectionAnchor): void {

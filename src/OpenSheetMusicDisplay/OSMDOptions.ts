@@ -32,6 +32,8 @@ export interface IOSMDOptions {
     onRangeSelectionClearRequest?: (payload: RangeSelectionPayload) => void;
     /** Callback to render host controls in the selection controls container (usually from consuming app). */
     onRangeSelectionControlsRender?: (container: HTMLDivElement, payload: RangeSelectionPayload) => void;
+    /** Callback fired when dragging a start/end range handle starts or stops. */
+    onRangeHandleDraggingChange?: (isHandleDragging: boolean) => void;
     /** Whether to let Vexflow align rests to preceding or following notes (Vexflow option). Default false (0).
      * This can naturally reduce collisions of rest notes with other notes.
      * Auto mode (2) only aligns rests when there are multiple voices in a measure,
