@@ -133,17 +133,31 @@ export class OpenSheetMusicDisplay {
     private lastRangeOpacityUpdateTimestampMs: number = 0;
     private pendingRangePointerMoveAnchor: RangeSelectionAnchor;
     private rangePointerMoveAnimationFrameId: number = 0;
+    private rangeTouchAutoScrollAnimationFrameId: number = 0;
     private needsCommittedRangeAnchorRefresh: boolean = false;
     private hoverAnchor: RangeSelectionAnchor;
     private dragStartAnchor: RangeSelectionAnchor;
     private dragCurrentAnchor: RangeSelectionAnchor;
+    private pendingTouchRangeStartAnchor: RangeSelectionAnchor;
     private activeDragBound: "start" | "end" | "both" = "both";
     private rangeDragPointerCaptureElement: Element;
     private rangeDragPointerId: number = -1;
+    private activeTouchPointerId: number = -1;
+    private activeTouchStartClientX: number = 0;
+    private activeTouchStartClientY: number = 0;
+    private activeTouchMoved: boolean = false;
+    private activeTouchDownAnchor: RangeSelectionAnchor;
+    private activeTouchDragClientX: number = 0;
+    private activeTouchDragClientY: number = 0;
+    private touchDragScrollLockEnabled: boolean = false;
+    private touchDragNativeScrollSuppressed: boolean = false;
+    private touchPendingAction: "none" | "setOrCommit" | "clearSelection" = "none";
     private readonly rangePointerMoveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerMove(event);
     private readonly rangePointerDownListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerDown(event);
     private readonly rangePointerUpListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerUp(event);
+    private readonly rangePointerCancelListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerCancel(event);
     private readonly rangePointerLeaveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerLeave(event);
+    private readonly touchMoveDuringRangeDragListener: (event: TouchEvent) => void = (event: TouchEvent): void => this.onTouchMoveDuringRangeDrag(event);
 
     /**
      * Load a MusicXML file
@@ -524,6 +538,7 @@ export class OpenSheetMusicDisplay {
         }
         this.dragStartAnchor = startAnchor;
         this.dragCurrentAnchor = endAnchor;
+        this.pendingTouchRangeStartAnchor = undefined;
         this.renderRangeSelection();
         this.emitRangeSelection("committed", startAnchor, endAnchor, false);
     }
@@ -535,8 +550,10 @@ export class OpenSheetMusicDisplay {
         const endAnchor: RangeSelectionAnchor = this.dragCurrentAnchor;
         this.dragStartAnchor = undefined;
         this.dragCurrentAnchor = undefined;
+        this.pendingTouchRangeStartAnchor = undefined;
         this.activeDragBound = "both";
         this.isRangeDragging = false;
+        this.resetTouchGestureState();
         this.renderRangeSelection();
         if (emitCallback && hadSelection && startAnchor && endAnchor) {
             this.emitRangeSelection("cleared", startAnchor, endAnchor, false);
@@ -1550,18 +1567,22 @@ export class OpenSheetMusicDisplay {
         }
         this.detachRangeSelectionListeners();
         for (const element of currentElements) {
-            element.addEventListener("pointermove", this.rangePointerMoveListener, { passive: true });
+            element.addEventListener("pointermove", this.rangePointerMoveListener, { passive: false });
             element.addEventListener("pointerdown", this.rangePointerDownListener);
             element.addEventListener("pointerleave", this.rangePointerLeaveListener, { passive: true });
             this.rangeInteractionBoundElements.push(element);
         }
         if (this.rangeInteractionBoundElements.length > 0) {
             window.addEventListener("pointerup", this.rangePointerUpListener);
+            window.addEventListener("pointercancel", this.rangePointerCancelListener);
         }
     }
 
     private detachRangeSelectionListeners(): void {
         this.cancelPendingRangeOpacityUpdate();
+        this.stopTouchDragAutoScroll();
+        this.setTouchDragScrollLockEnabled(false);
+        this.setTouchDragNativeScrollSuppressed(false);
         this.releaseRangeDragPointerCapture();
         if (this.rangePointerMoveAnimationFrameId !== 0) {
             window.cancelAnimationFrame(this.rangePointerMoveAnimationFrameId);
@@ -1572,9 +1593,11 @@ export class OpenSheetMusicDisplay {
             element.removeEventListener("pointermove", this.rangePointerMoveListener);
             element.removeEventListener("pointerdown", this.rangePointerDownListener);
             element.removeEventListener("pointerleave", this.rangePointerLeaveListener);
+            element.style.removeProperty("cursor");
         }
         this.rangeInteractionBoundElements = [];
         window.removeEventListener("pointerup", this.rangePointerUpListener);
+        window.removeEventListener("pointercancel", this.rangePointerCancelListener);
     }
 
     private ensureRangeSelectionOverlay(): void {
@@ -1630,7 +1653,23 @@ export class OpenSheetMusicDisplay {
         if (!this.interactiveRangeSelectionEnabled) {
             return;
         }
+        if (this.isTouchPointerEvent(event)) {
+            this.updateTouchMoveState(event);
+            if (event.pointerId !== this.activeTouchPointerId) {
+                return;
+            }
+            if (this.isRangeDragging) {
+                this.activeTouchDragClientX = event.clientX;
+                this.activeTouchDragClientY = event.clientY;
+                event.preventDefault();
+            }
+            // Let touch gestures default to native page/score scrolling unless we are actively dragging a handle.
+            if (!this.isRangeDragging) {
+                return;
+            }
+        }
         const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
+        this.updateDesktopRangeCursor(event, anchor);
         if (!anchor) {
             return;
         }
@@ -1669,12 +1708,12 @@ export class OpenSheetMusicDisplay {
         if (!this.interactiveRangeSelectionEnabled) {
             return;
         }
-        const pointerCaptureElement: Element = event.currentTarget as Element;
-        if (pointerCaptureElement?.setPointerCapture) {
-            pointerCaptureElement.setPointerCapture(event.pointerId);
-            this.rangeDragPointerCaptureElement = pointerCaptureElement;
-            this.rangeDragPointerId = event.pointerId;
+        if (this.isTouchPointerEvent(event)) {
+            this.onRangeTouchPointerDown(event);
+            return;
         }
+        this.pendingTouchRangeStartAnchor = undefined;
+        this.captureRangePointer(event);
         const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
         if (!anchor) {
             return;
@@ -1739,24 +1778,24 @@ export class OpenSheetMusicDisplay {
     }
 
     private onRangePointerUp(event: PointerEvent): void {
+        if (this.isTouchPointerEvent(event)) {
+            this.onRangeTouchPointerUp(event);
+            return;
+        }
         this.releaseRangeDragPointerCapture();
-        if (!this.interactiveRangeSelectionEnabled || !this.isRangeDragging || !this.dragStartAnchor) {
+        this.commitRangeDrag(event);
+    }
+
+    private onRangePointerCancel(event: PointerEvent): void {
+        if (!this.interactiveRangeSelectionEnabled || !this.isTouchPointerEvent(event)) {
             return;
         }
-        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event) ?? this.dragCurrentAnchor ?? this.dragStartAnchor;
-        this.isRangeDragging = false;
-        this.dragCurrentAnchor = anchor;
-        const committedSelection: RangeSelectionPayload = this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
-        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(committedSelection, this.activeDragBound);
-        this.dragStartAnchor = paddedSelection.normalizedStart;
-        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
-        this.activeDragBound = "both";
-        if (!this.selectionHasAnyNotes(this.dragStartAnchor, this.dragCurrentAnchor)) {
-            this.clearRangeSelection(true);
+        if (event.pointerId !== this.activeTouchPointerId) {
             return;
         }
-        this.renderRangeSelection();
-        this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+        this.releaseRangeDragPointerCapture();
+        this.commitRangeDrag();
+        this.resetTouchGestureState();
     }
 
     private releaseRangeDragPointerCapture(): void {
@@ -1775,6 +1814,7 @@ export class OpenSheetMusicDisplay {
     }
 
     private onRangePointerLeave(event: PointerEvent): void {
+        this.clearDesktopRangeCursor(event);
         if (this.isRangeDragging) {
             return;
         }
@@ -1786,11 +1826,320 @@ export class OpenSheetMusicDisplay {
         this.renderRangeSelection();
     }
 
+    private onRangeTouchPointerDown(event: PointerEvent): void {
+        if (this.activeTouchPointerId !== -1 && this.activeTouchPointerId !== event.pointerId) {
+            return;
+        }
+        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
+        if (!anchor) {
+            return;
+        }
+        this.activeTouchPointerId = event.pointerId;
+        this.activeTouchStartClientX = event.clientX;
+        this.activeTouchStartClientY = event.clientY;
+        this.activeTouchMoved = false;
+        this.activeTouchDownAnchor = anchor;
+        this.activeTouchDragClientX = event.clientX;
+        this.activeTouchDragClientY = event.clientY;
+        this.touchPendingAction = "none";
+
+        const existingSelection: RangeSelectionPayload = this.getRangeSelection();
+        const draggedBound: "start" | "end" | undefined = this.getDraggedBoundFromAnchor(anchor, existingSelection, true);
+        if (existingSelection) {
+            if (draggedBound) {
+                this.pendingTouchRangeStartAnchor = undefined;
+                this.captureRangePointer(event);
+                this.startRangeHandleDrag(existingSelection, draggedBound, anchor);
+                event.preventDefault();
+                return;
+            }
+            if (this.isAnchorInsideSelection(anchor, existingSelection)) {
+                return;
+            }
+            this.touchPendingAction = "clearSelection";
+            return;
+        }
+        this.touchPendingAction = "setOrCommit";
+    }
+
+    private onRangeTouchPointerUp(event: PointerEvent): void {
+        if (this.activeTouchPointerId !== event.pointerId) {
+            return;
+        }
+        if (this.isRangeDragging) {
+            this.releaseRangeDragPointerCapture();
+            this.commitRangeDrag(event);
+            this.resetTouchGestureState();
+            return;
+        }
+        const isTap: boolean = !this.activeTouchMoved;
+        const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event) ?? this.activeTouchDownAnchor;
+        if (isTap) {
+            if (this.touchPendingAction === "clearSelection") {
+                this.clearRangeSelection(true);
+            } else if (this.touchPendingAction === "setOrCommit" && anchor) {
+                this.handleTouchTapRangePick(anchor);
+            }
+        }
+        this.resetTouchGestureState();
+    }
+
+    private captureRangePointer(event: PointerEvent): void {
+        const pointerCaptureElement: Element = event.currentTarget as Element;
+        if (pointerCaptureElement?.setPointerCapture) {
+            pointerCaptureElement.setPointerCapture(event.pointerId);
+            this.rangeDragPointerCaptureElement = pointerCaptureElement;
+            this.rangeDragPointerId = event.pointerId;
+        }
+    }
+
+    private commitRangeDrag(event?: PointerEvent): void {
+        if (!this.interactiveRangeSelectionEnabled || !this.isRangeDragging || !this.dragStartAnchor) {
+            return;
+        }
+        const anchor: RangeSelectionAnchor = (event ? this.getAnchorFromPointerEvent(event) : undefined)
+            ?? this.dragCurrentAnchor
+            ?? this.dragStartAnchor;
+        this.isRangeDragging = false;
+        this.dragCurrentAnchor = anchor;
+        const committedSelection: RangeSelectionPayload = this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(committedSelection, this.activeDragBound);
+        this.dragStartAnchor = paddedSelection.normalizedStart;
+        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
+        this.pendingTouchRangeStartAnchor = undefined;
+        this.activeDragBound = "both";
+        if (!this.selectionHasAnyNotes(this.dragStartAnchor, this.dragCurrentAnchor)) {
+            this.clearRangeSelection(true);
+            return;
+        }
+        this.renderRangeSelection();
+        this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+    }
+
+    private startRangeHandleDrag(
+        existingSelection: RangeSelectionPayload,
+        draggedBound: "start" | "end",
+        anchor: RangeSelectionAnchor
+    ): void {
+        this.isRangeDragging = true;
+        this.setTouchDragScrollLockEnabled(true);
+        this.setTouchDragNativeScrollSuppressed(true);
+        this.startTouchDragAutoScroll();
+        if (draggedBound === "start") {
+            // Resize start bound (keep end fixed).
+            this.activeDragBound = "start";
+            this.dragStartAnchor = existingSelection.normalizedEnd;
+        } else {
+            // Resize end bound (keep start fixed).
+            this.activeDragBound = "end";
+            this.dragStartAnchor = existingSelection.normalizedStart;
+        }
+        this.dragCurrentAnchor = anchor;
+        this.renderRangeSelection();
+        this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
+    }
+
+    private handleTouchTapRangePick(anchor: RangeSelectionAnchor): void {
+        if (!this.pendingTouchRangeStartAnchor) {
+            this.pendingTouchRangeStartAnchor = anchor;
+            this.hoverAnchor = anchor;
+            this.renderRangeSelection();
+            this.emitRangeSelection("hover", anchor, anchor, false);
+            return;
+        }
+        this.dragStartAnchor = this.pendingTouchRangeStartAnchor;
+        this.dragCurrentAnchor = anchor;
+        this.pendingTouchRangeStartAnchor = undefined;
+        const committedSelection: RangeSelectionPayload = this.createSelectionPayload("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(committedSelection, "both");
+        this.dragStartAnchor = paddedSelection.normalizedStart;
+        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
+        if (!this.selectionHasAnyNotes(this.dragStartAnchor, this.dragCurrentAnchor)) {
+            this.clearRangeSelection(true);
+            return;
+        }
+        this.renderRangeSelection();
+        this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+    }
+
+    private updateTouchMoveState(event: PointerEvent): void {
+        if (event.pointerId !== this.activeTouchPointerId || this.activeTouchMoved) {
+            return;
+        }
+        const movementThresholdPx: number = 10;
+        const distanceX: number = Math.abs(event.clientX - this.activeTouchStartClientX);
+        const distanceY: number = Math.abs(event.clientY - this.activeTouchStartClientY);
+        if (distanceX >= movementThresholdPx || distanceY >= movementThresholdPx) {
+            this.activeTouchMoved = true;
+            this.touchPendingAction = "none";
+        }
+    }
+
+    private resetTouchGestureState(): void {
+        this.stopTouchDragAutoScroll();
+        this.setTouchDragScrollLockEnabled(false);
+        this.setTouchDragNativeScrollSuppressed(false);
+        this.activeTouchPointerId = -1;
+        this.activeTouchMoved = false;
+        this.activeTouchDownAnchor = undefined;
+        this.activeTouchDragClientX = 0;
+        this.activeTouchDragClientY = 0;
+        this.touchPendingAction = "none";
+    }
+
+    private isTouchPointerEvent(event: PointerEvent): boolean {
+        return event.pointerType === "touch";
+    }
+
+    private setTouchDragScrollLockEnabled(enabled: boolean): void {
+        if (this.touchDragScrollLockEnabled === enabled) {
+            return;
+        }
+        this.touchDragScrollLockEnabled = enabled;
+        for (const element of this.rangeInteractionBoundElements) {
+            if (enabled) {
+                element.style.touchAction = "none";
+            } else {
+                element.style.removeProperty("touch-action");
+            }
+        }
+    }
+
+    private setTouchDragNativeScrollSuppressed(enabled: boolean): void {
+        if (this.touchDragNativeScrollSuppressed === enabled) {
+            return;
+        }
+        this.touchDragNativeScrollSuppressed = enabled;
+        if (enabled) {
+            window.addEventListener("touchmove", this.touchMoveDuringRangeDragListener, { passive: false });
+        } else {
+            window.removeEventListener("touchmove", this.touchMoveDuringRangeDragListener);
+        }
+    }
+
+    private onTouchMoveDuringRangeDrag(event: TouchEvent): void {
+        if (!this.isRangeDragging || this.activeTouchPointerId < 0) {
+            return;
+        }
+        event.preventDefault();
+    }
+
+    private updateDesktopRangeCursor(event: PointerEvent, anchor: RangeSelectionAnchor): void {
+        if (this.isTouchPointerEvent(event)) {
+            return;
+        }
+        const pointerElement: HTMLElement = event.currentTarget as HTMLElement;
+        if (!pointerElement) {
+            return;
+        }
+        const existingSelection: RangeSelectionPayload = this.getRangeSelection();
+        const hoveredHandle: "start" | "end" | undefined = this.getDraggedBoundFromAnchor(anchor, existingSelection, false);
+        pointerElement.style.cursor = hoveredHandle ? "pointer" : "";
+    }
+
+    private clearDesktopRangeCursor(event: PointerEvent): void {
+        if (this.isTouchPointerEvent(event)) {
+            return;
+        }
+        const pointerElement: HTMLElement = event.currentTarget as HTMLElement;
+        if (!pointerElement) {
+            return;
+        }
+        pointerElement.style.removeProperty("cursor");
+    }
+
+    private startTouchDragAutoScroll(): void {
+        if (this.rangeTouchAutoScrollAnimationFrameId !== 0) {
+            return;
+        }
+        const step: () => void = (): void => {
+            this.rangeTouchAutoScrollAnimationFrameId = 0;
+            if (!this.isRangeDragging || this.activeTouchPointerId < 0) {
+                return;
+            }
+            const scrollContainer: HTMLElement | Window = this.getTouchDragScrollContainer();
+            const scrollDeltaY: number = this.getTouchDragScrollDeltaY(scrollContainer, this.activeTouchDragClientY);
+            if (scrollDeltaY !== 0) {
+                if (this.isWindowObject(scrollContainer)) {
+                    scrollContainer.scrollBy(0, scrollDeltaY);
+                } else {
+                    scrollContainer.scrollTop += scrollDeltaY;
+                }
+                const anchorFromScroll: RangeSelectionAnchor = this.getAnchorFromClientPoint(this.activeTouchDragClientX, this.activeTouchDragClientY);
+                if (anchorFromScroll && this.dragStartAnchor) {
+                    this.dragCurrentAnchor = anchorFromScroll;
+                    this.renderRangeSelection();
+                    this.emitRangeSelection("dragging", this.dragStartAnchor, this.dragCurrentAnchor, true);
+                }
+            }
+            this.rangeTouchAutoScrollAnimationFrameId = window.requestAnimationFrame(step);
+        };
+        this.rangeTouchAutoScrollAnimationFrameId = window.requestAnimationFrame(step);
+    }
+
+    private stopTouchDragAutoScroll(): void {
+        if (this.rangeTouchAutoScrollAnimationFrameId === 0) {
+            return;
+        }
+        window.cancelAnimationFrame(this.rangeTouchAutoScrollAnimationFrameId);
+        this.rangeTouchAutoScrollAnimationFrameId = 0;
+    }
+
+    private getTouchDragScrollContainer(): HTMLElement | Window {
+        let current: HTMLElement = this.container;
+        while (current && current !== document.body) {
+            const styles: CSSStyleDeclaration = window.getComputedStyle(current);
+            const overflowY: string = styles.overflowY;
+            const isScrollable: boolean = (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay")
+                && current.scrollHeight > current.clientHeight;
+            if (isScrollable) {
+                return current;
+            }
+            current = current.parentElement;
+        }
+        return window;
+    }
+
+    private getTouchDragScrollDeltaY(scrollContainer: HTMLElement | Window, clientY: number): number {
+        const edgeThresholdPx: number = 18;
+        const minSpeedPxPerFrame: number = 2;
+        const maxSpeedPxPerFrame: number = 10;
+        let top: number;
+        let bottom: number;
+        if (this.isWindowObject(scrollContainer)) {
+            top = 0;
+            bottom = window.innerHeight;
+        } else {
+            const rect: DOMRect = scrollContainer.getBoundingClientRect();
+            top = rect.top;
+            bottom = rect.bottom;
+        }
+        if (clientY < top + edgeThresholdPx) {
+            const ratio: number = Math.max(0, (top + edgeThresholdPx - clientY) / edgeThresholdPx);
+            const speed: number = minSpeedPxPerFrame + (maxSpeedPxPerFrame - minSpeedPxPerFrame) * ratio;
+            return -Math.round(speed);
+        }
+        if (clientY > bottom - edgeThresholdPx) {
+            const ratio: number = Math.max(0, (clientY - (bottom - edgeThresholdPx)) / edgeThresholdPx);
+            const speed: number = minSpeedPxPerFrame + (maxSpeedPxPerFrame - minSpeedPxPerFrame) * ratio;
+            return Math.round(speed);
+        }
+        return 0;
+    }
+
+    private isWindowObject(target: HTMLElement | Window): target is Window {
+        return target === window;
+    }
+
     private getAnchorFromPointerEvent(event: PointerEvent): RangeSelectionAnchor {
+        return this.getAnchorFromClientPoint(event.clientX, event.clientY);
+    }
+
+    private getAnchorFromClientPoint(clientX: number, clientY: number): RangeSelectionAnchor {
         if (!this.graphic) {
             return undefined;
         }
-        const domPoint: PointF2D = new PointF2D(event.clientX, event.clientY);
+        const domPoint: PointF2D = new PointF2D(clientX, clientY);
         const svgPoint: PointF2D = this.graphic.domToSvg(domPoint);
         if (!svgPoint) {
             return undefined;
@@ -1941,11 +2290,18 @@ export class OpenSheetMusicDisplay {
             && anchor.timestampReal <= selection.normalizedEnd.timestampReal;
     }
 
-    private getDraggedBoundFromAnchor(anchor: RangeSelectionAnchor, selection: RangeSelectionPayload): "start" | "end" | undefined {
+    private getDraggedBoundFromAnchor(
+        anchor: RangeSelectionAnchor,
+        selection: RangeSelectionPayload,
+        isTouchInteraction: boolean = false
+    ): "start" | "end" | undefined {
         if (!anchor || !selection) {
             return undefined;
         }
-        const lineHitTolerancePx: number = Math.max(this.getSelectionLineWidthPx() * 1.5, 12);
+        const baseLineHitTolerancePx: number = Math.max(this.getSelectionLineWidthPx() * 1.5, 12);
+        const lineHitTolerancePx: number = isTouchInteraction
+            ? Math.max(baseLineHitTolerancePx * 2.5, 30)
+            : baseLineHitTolerancePx;
         const matchesStartSystem: boolean = anchor.systemIndex === selection.normalizedStart.systemIndex;
         const matchesEndSystem: boolean = anchor.systemIndex === selection.normalizedEnd.systemIndex;
         const startDistancePx: number = Math.abs(anchor.xPx - selection.normalizedStart.xPx);
@@ -2077,6 +2433,10 @@ export class OpenSheetMusicDisplay {
                 const currentSelection: RangeSelectionPayload = this.getRangeSelection();
                 this.renderRangeActionButtons(currentSelection);
             }
+            return;
+        }
+        if (!hideSelectionVisuals && !this.isRangeDragging && this.pendingTouchRangeStartAnchor) {
+            this.renderVerticalLine(this.pendingTouchRangeStartAnchor, this.getSelectionLineColor(), this.getSelectionLineWidthPx());
             return;
         }
         if (!hideSelectionVisuals && !this.isRangeDragging && this.hoverAnchor) {
