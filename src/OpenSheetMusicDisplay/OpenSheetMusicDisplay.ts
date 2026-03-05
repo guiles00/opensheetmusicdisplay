@@ -138,6 +138,8 @@ export class OpenSheetMusicDisplay {
     private dragStartAnchor: RangeSelectionAnchor;
     private dragCurrentAnchor: RangeSelectionAnchor;
     private activeDragBound: "start" | "end" | "both" = "both";
+    private rangeDragPointerCaptureElement: Element;
+    private rangeDragPointerId: number = -1;
     private readonly rangePointerMoveListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerMove(event);
     private readonly rangePointerDownListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerDown(event);
     private readonly rangePointerUpListener: (event: PointerEvent) => void = (event: PointerEvent): void => this.onRangePointerUp(event);
@@ -1560,6 +1562,7 @@ export class OpenSheetMusicDisplay {
 
     private detachRangeSelectionListeners(): void {
         this.cancelPendingRangeOpacityUpdate();
+        this.releaseRangeDragPointerCapture();
         if (this.rangePointerMoveAnimationFrameId !== 0) {
             window.cancelAnimationFrame(this.rangePointerMoveAnimationFrameId);
             this.rangePointerMoveAnimationFrameId = 0;
@@ -1666,6 +1669,12 @@ export class OpenSheetMusicDisplay {
         if (!this.interactiveRangeSelectionEnabled) {
             return;
         }
+        const pointerCaptureElement: Element = event.currentTarget as Element;
+        if (pointerCaptureElement?.setPointerCapture) {
+            pointerCaptureElement.setPointerCapture(event.pointerId);
+            this.rangeDragPointerCaptureElement = pointerCaptureElement;
+            this.rangeDragPointerId = event.pointerId;
+        }
         const anchor: RangeSelectionAnchor = this.getAnchorFromPointerEvent(event);
         if (!anchor) {
             return;
@@ -1730,6 +1739,7 @@ export class OpenSheetMusicDisplay {
     }
 
     private onRangePointerUp(event: PointerEvent): void {
+        this.releaseRangeDragPointerCapture();
         if (!this.interactiveRangeSelectionEnabled || !this.isRangeDragging || !this.dragStartAnchor) {
             return;
         }
@@ -1747,6 +1757,21 @@ export class OpenSheetMusicDisplay {
         }
         this.renderRangeSelection();
         this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
+    }
+
+    private releaseRangeDragPointerCapture(): void {
+        if (!this.rangeDragPointerCaptureElement || this.rangeDragPointerId < 0) {
+            return;
+        }
+        const captureElement: Element & {
+            hasPointerCapture?: (pointerId: number) => boolean;
+            releasePointerCapture?: (pointerId: number) => void;
+        } = this.rangeDragPointerCaptureElement as any;
+        if (captureElement.hasPointerCapture?.(this.rangeDragPointerId) && captureElement.releasePointerCapture) {
+            captureElement.releasePointerCapture(this.rangeDragPointerId);
+        }
+        this.rangeDragPointerCaptureElement = undefined;
+        this.rangeDragPointerId = -1;
     }
 
     private onRangePointerLeave(event: PointerEvent): void {
@@ -1778,14 +1803,21 @@ export class OpenSheetMusicDisplay {
         if (!system) {
             return undefined;
         }
-        const horizontalBounds: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
-        const xPx: number = Math.min(horizontalBounds.rightPx, Math.max(horizontalBounds.leftPx, svgPoint.x));
-        const x: number = xPx / (this.zoom * 10.0);
+        const leftBoundaryX: number = system.GetLeftBorderAbsoluteXPosition();
+        const rightBoundaryX: number = system.GetRightBorderAbsoluteXPosition();
+        const zoomScale: number = Math.max(0.0001, this.zoom * 10.0);
+        const preStartPaddingPx: number = this.getRangeSelectionPreStartPaddingPx();
+        const preStartPaddingOsmd: number = preStartPaddingPx / zoomScale;
+        const x: number = Math.min(
+            rightBoundaryX,
+            Math.max(leftBoundaryX - preStartPaddingOsmd, osmdPoint.x)
+        );
+        const xPx: number = x * zoomScale;
         const startTime: Fraction = system.GetSystemsFirstTimeStamp();
         const endTime: Fraction = system.GetSystemsLastTimeStamp();
-        const totalWidthPx: number = Math.max(1, horizontalBounds.rightPx - horizontalBounds.leftPx);
-        const ratio: number = (xPx - horizontalBounds.leftPx) / totalWidthPx;
-        const clampedRatio: number = Math.max(0, Math.min(1, ratio));
+        const totalWidthOsmd: number = Math.max(0.0001, rightBoundaryX - leftBoundaryX);
+        const ratio: number = (x - leftBoundaryX) / totalWidthOsmd;
+        const clampedRatio: number = Math.max(-(preStartPaddingOsmd / totalWidthOsmd), Math.min(1, ratio));
         const timestampReal: number = startTime.RealValue + (endTime.RealValue - startTime.RealValue) * clampedRatio;
         const timestamp: Fraction = new Fraction(timestampReal, 1);
         if (!timestamp) {
@@ -1955,7 +1987,11 @@ export class OpenSheetMusicDisplay {
             return anchor;
         }
         const horizontalBounds: { leftPx: number, rightPx: number } = this.getSystemHorizontalBoundsInPixels(system);
-        const shiftedXPx: number = Math.min(horizontalBounds.rightPx, Math.max(horizontalBounds.leftPx, anchor.xPx + deltaPx));
+        const preStartPaddingPx: number = this.getRangeSelectionPreStartPaddingPx();
+        const shiftedXPx: number = Math.min(
+            horizontalBounds.rightPx,
+            Math.max(horizontalBounds.leftPx - preStartPaddingPx, anchor.xPx + deltaPx)
+        );
         const startTime: Fraction = system.GetSystemsFirstTimeStamp();
         const endTime: Fraction = system.GetSystemsLastTimeStamp();
         const widthPx: number = Math.max(1, horizontalBounds.rightPx - horizontalBounds.leftPx);
@@ -2089,7 +2125,10 @@ export class OpenSheetMusicDisplay {
                     selectionLeft = Math.min(firstAnchor.xPx, lastAnchor.xPx);
                     selectionRight = Math.max(firstAnchor.xPx, lastAnchor.xPx);
                 }
-                selectionLeft = Math.max(horizontal.leftPx, selectionLeft);
+                const minLeftPx: number = systemIndex === firstAnchor.systemIndex
+                    ? horizontal.leftPx - this.getRangeSelectionPreStartPaddingPx()
+                    : horizontal.leftPx;
+                selectionLeft = Math.max(minLeftPx, selectionLeft);
                 selectionRight = Math.min(horizontal.rightPx, selectionRight);
                 if (selectionRight < selectionLeft) {
                     const temp: number = selectionLeft;
@@ -2180,6 +2219,12 @@ export class OpenSheetMusicDisplay {
         return this.interactiveRangeSelectionOptions.overlayZIndex ?? 8;
     }
 
+    private getRangeSelectionPreStartPaddingPx(): number {
+        // Allow hovering and dragging slightly before the first visible system timestamp,
+        // so notes at the start boundary (timestamp 0) can still be selected.
+        return Math.max(this.getSelectionLineWidthPx() * 4, 48);
+    }
+
     private selectionHasAnyNotes(start: RangeSelectionAnchor, end: RangeSelectionAnchor): boolean {
         if (!this.sheet || !start || !end || !this.graphic) {
             return false;
@@ -2198,9 +2243,7 @@ export class OpenSheetMusicDisplay {
                             if (!graphicalNote) {
                                 continue;
                             }
-                            const noteSystemIndex: number = this.getSystemIndexForGraphicalNote(graphicalNote);
-                            const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
-                            if (this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
+                            if (this.isGraphicalNoteInSelection(note, graphicalNote, selection, segments)) {
                                 return true;
                             }
                         }
@@ -2295,9 +2338,7 @@ export class OpenSheetMusicDisplay {
                             if (!graphicalNote) {
                                 continue;
                             }
-                            const noteSystemIndex: number = this.getSystemIndexForGraphicalNote(graphicalNote);
-                            const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
-                            if (!this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
+                            if (!this.isGraphicalNoteInSelection(note, graphicalNote, selection, segments)) {
                                 graphicalNote.setOpacity(nonSelectedOpacity);
                             } else {
                                 graphicalNote.setOpacity(1.0);
@@ -2425,7 +2466,10 @@ export class OpenSheetMusicDisplay {
                 if (systemIndex === selection.normalizedEnd.systemIndex) {
                     rightPx = selection.normalizedEnd.xPx;
                 }
-                leftPx = Math.max(horizontal.leftPx, leftPx);
+                const minLeftPx: number = systemIndex === selection.normalizedStart.systemIndex
+                    ? horizontal.leftPx - this.getRangeSelectionPreStartPaddingPx()
+                    : horizontal.leftPx;
+                leftPx = Math.max(minLeftPx, leftPx);
                 rightPx = Math.min(horizontal.rightPx, rightPx);
                 if (rightPx < leftPx) {
                     const temp: number = leftPx;
@@ -2455,6 +2499,41 @@ export class OpenSheetMusicDisplay {
             }
         }
         return false;
+    }
+
+    private isGraphicalNoteInSelection(
+        note: any,
+        graphicalNote: GraphicalNote,
+        selection: RangeSelectionPayload,
+        segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }>
+    ): boolean {
+        const noteSystemIndex: number = this.getSystemIndexForGraphicalNote(graphicalNote);
+        const noteXPx: number = graphicalNote.PositionAndShape.AbsolutePosition.x * this.zoom * 10.0;
+        if (this.isXInSelection(noteSystemIndex, noteXPx, segments)) {
+            return true;
+        }
+        const noteTimestampReal: number = this.getAbsoluteTimestampRealForNote(note);
+        return this.isTimestampRealInSelection(noteTimestampReal, selection);
+    }
+
+    private getAbsoluteTimestampRealForNote(note: any): number {
+        const timestamp: Fraction = note?.ParentVoiceEntry?.Timestamp;
+        const sourceMeasureAbsoluteTimestamp: Fraction =
+            note?.ParentVoiceEntry?.ParentSourceStaffEntry?.VerticalContainerParent?.ParentMeasure?.AbsoluteTimestamp
+            ?? note?.SourceMeasure?.AbsoluteTimestamp;
+        if (!timestamp || !sourceMeasureAbsoluteTimestamp) {
+            return undefined;
+        }
+        return Fraction.plus(sourceMeasureAbsoluteTimestamp, timestamp).RealValue;
+    }
+
+    private isTimestampRealInSelection(timestampReal: number, selection: RangeSelectionPayload): boolean {
+        if (timestampReal === undefined || !selection?.normalizedStart || !selection?.normalizedEnd) {
+            return false;
+        }
+        const epsilon: number = Fraction.FloatInaccuracyTolerance;
+        return timestampReal >= selection.normalizedStart.timestampReal - epsilon
+            && timestampReal <= selection.normalizedEnd.timestampReal + epsilon;
     }
 
     private applyTupletOpacityForSelection(
