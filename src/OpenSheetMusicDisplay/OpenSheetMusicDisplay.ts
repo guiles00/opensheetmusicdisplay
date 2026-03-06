@@ -2133,7 +2133,7 @@ export class OpenSheetMusicDisplay {
     }
 
     private getTouchDragScrollDeltaY(scrollContainer: HTMLElement | Window, clientY: number): number {
-        const edgeThresholdPx: number = 18;
+        const edgeThresholdPx: number = this.getRangeSelectionSnapPaddingPx();
         const minSpeedPxPerFrame: number = 2;
         const maxSpeedPxPerFrame: number = 10;
         let top: number;
@@ -2395,11 +2395,7 @@ export class OpenSheetMusicDisplay {
                 for (const staffLine of musicSystem.StaffLines) {
                     for (const measure of staffLine.Measures) {
                         for (const entry of measure.staffEntries) {
-                            // Check if entry has playable notes (not just rests)
-                            const hasNotes: boolean = entry.sourceStaffEntry?.VoiceEntries?.some(
-                                (ve: any) => ve.Notes?.some((n: any) => !n.isRest())
-                            ) ?? false;
-                            if (!hasNotes) {
+                            if (!this.entryHasPlayableNotes(entry)) {
                                 continue;
                             }
                             const candidateX: number = entry.PositionAndShape?.AbsolutePosition?.x;
@@ -2444,9 +2440,12 @@ export class OpenSheetMusicDisplay {
         }
         const entryX: number = bestEntry.PositionAndShape?.AbsolutePosition?.x ?? anchor.x;
         const entryXPx: number = entryX * scale;
-        // Shift xPx 18px outward so handles, fill, and gray-out all agree visually
-        const snapMarginPx: number = bound === "start" ? -18 : 18;
-        const snappedXPx: number = entryXPx + snapMarginPx;
+        const widthCompensationPx: number = this.getSnapWidthCompensationPxForEntry(bestEntry, bound, scale);
+        const snapPaddingPx: number = this.getRangeSelectionSnapPaddingPx();
+        const rawSnappedXPx: number = bound === "start"
+            ? entryXPx - snapPaddingPx - widthCompensationPx
+            : entryXPx + snapPaddingPx + widthCompensationPx;
+        const snappedXPx: number = this.clampSnapBoundaryToAdjacentEntryMidpoint(bestEntry, bound, rawSnappedXPx, scale);
         const snappedX: number = snappedXPx / scale;
         const entryTimestamp: number = bestEntry.getAbsoluteTimestamp()?.RealValue ?? anchor.timestampReal;
         const system: MusicSystem = bestEntry.parentMeasure?.ParentMusicSystem
@@ -2463,9 +2462,139 @@ export class OpenSheetMusicDisplay {
             staffIndex: bestEntry.sourceStaffEntry?.ParentStaff?.idInMusicSheet ?? anchor.staffIndex,
             x: snappedX,
             xPx: snappedXPx,
+            selectionX: entryX,
+            selectionXPx: entryXPx,
             yPx: lineBounds.yPx,
             heightPx: lineBounds.heightPx,
         };
+    }
+
+    private getRangeSelectionSnapPaddingPx(): number {
+        // Keep this aligned with touch auto-scroll edge threshold.
+        return 30;
+    }
+
+    private getRangeSelectionSnapNeighborLeewayPx(): number {
+        return 16;
+    }
+
+    private entryHasPlayableNotes(entry: GraphicalStaffEntry): boolean {
+        return entry?.sourceStaffEntry?.VoiceEntries?.some(
+            (voiceEntry: any) => voiceEntry.Notes?.some((note: any) => !note.isRest())
+        ) ?? false;
+    }
+
+    private clampSnapBoundaryToAdjacentEntryMidpoint(
+        entry: GraphicalStaffEntry,
+        bound: "start" | "end",
+        snappedXPx: number,
+        scale: number
+    ): number {
+        if (!entry || !Number.isFinite(snappedXPx) || !Number.isFinite(scale)) {
+            return snappedXPx;
+        }
+        const entryCenterXPx: number = (entry.PositionAndShape?.AbsolutePosition?.x ?? NaN) * scale;
+        if (!Number.isFinite(entryCenterXPx)) {
+            return snappedXPx;
+        }
+        const neighborCenterXPx: number = this.getAdjacentPlayableEntryCenterXPx(
+            entry,
+            bound === "start" ? "previous" : "next",
+            scale
+        );
+        if (!Number.isFinite(neighborCenterXPx)) {
+            return snappedXPx;
+        }
+        const midpointXPx: number = (entryCenterXPx + neighborCenterXPx) / 2;
+        const leewayPx: number = this.getRangeSelectionSnapNeighborLeewayPx();
+        return bound === "start"
+            ? Math.max(snappedXPx, midpointXPx - leewayPx)
+            : Math.min(snappedXPx, midpointXPx + leewayPx);
+    }
+
+    private getAdjacentPlayableEntryCenterXPx(
+        entry: GraphicalStaffEntry,
+        direction: "previous" | "next",
+        scale: number
+    ): number {
+        const system: MusicSystem = entry?.parentMeasure?.ParentMusicSystem;
+        if (!system || !Number.isFinite(scale)) {
+            return undefined;
+        }
+        const entryCenterXPx: number = (entry.PositionAndShape?.AbsolutePosition?.x ?? NaN) * scale;
+        if (!Number.isFinite(entryCenterXPx)) {
+            return undefined;
+        }
+        let candidateCenterXPx: number = direction === "previous" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+        for (const staffLine of system.StaffLines) {
+            for (const measure of staffLine.Measures) {
+                for (const candidateEntry of measure.staffEntries) {
+                    if (!candidateEntry || candidateEntry === entry || !this.entryHasPlayableNotes(candidateEntry)) {
+                        continue;
+                    }
+                    const centerXPx: number = (candidateEntry.PositionAndShape?.AbsolutePosition?.x ?? NaN) * scale;
+                    if (!Number.isFinite(centerXPx)) {
+                        continue;
+                    }
+                    if (direction === "previous") {
+                        if (centerXPx < entryCenterXPx && centerXPx > candidateCenterXPx) {
+                            candidateCenterXPx = centerXPx;
+                        }
+                    } else if (centerXPx > entryCenterXPx && centerXPx < candidateCenterXPx) {
+                        candidateCenterXPx = centerXPx;
+                    }
+                }
+            }
+        }
+        if (direction === "previous" && !Number.isFinite(candidateCenterXPx)) {
+            return undefined;
+        }
+        if (direction === "next" && !Number.isFinite(candidateCenterXPx)) {
+            return undefined;
+        }
+        return candidateCenterXPx;
+    }
+
+    private getSnapWidthCompensationPxForEntry(
+        entry: GraphicalStaffEntry,
+        bound: "start" | "end",
+        scale: number
+    ): number {
+        if (!entry || !Number.isFinite(scale)) {
+            return 0;
+        }
+        const entryX: number = entry.PositionAndShape?.AbsolutePosition?.x;
+        if (!Number.isFinite(entryX)) {
+            return 0;
+        }
+        const entryXPx: number = entryX * scale;
+        let minLeftXPx: number = Number.POSITIVE_INFINITY;
+        let maxRightXPx: number = Number.NEGATIVE_INFINITY;
+
+        for (const graphicalVoiceEntry of entry.graphicalVoiceEntries ?? []) {
+            for (const graphicalNote of graphicalVoiceEntry?.notes ?? []) {
+                const sourceNote: any = graphicalNote?.sourceNote;
+                if (!sourceNote || sourceNote.isRest()) {
+                    continue;
+                }
+                const noteX: number = graphicalNote.PositionAndShape?.AbsolutePosition?.x;
+                if (!Number.isFinite(noteX)) {
+                    continue;
+                }
+                const noteXPx: number = noteX * scale;
+                const noteLeftXPx: number = noteXPx + ((graphicalNote.PositionAndShape?.BorderLeft ?? 0) * scale);
+                const noteRightXPx: number = noteXPx + ((graphicalNote.PositionAndShape?.BorderRight ?? 0) * scale);
+                minLeftXPx = Math.min(minLeftXPx, noteLeftXPx);
+                maxRightXPx = Math.max(maxRightXPx, noteRightXPx);
+            }
+        }
+
+        if (!Number.isFinite(minLeftXPx) || !Number.isFinite(maxRightXPx)) {
+            return 0;
+        }
+        return bound === "start"
+            ? Math.max(0, entryXPx - minLeftXPx)
+            : Math.max(0, maxRightXPx - entryXPx);
     }
 
     private shiftAnchorX(anchor: RangeSelectionAnchor, deltaPx: number): RangeSelectionAnchor {
@@ -2837,7 +2966,10 @@ export class OpenSheetMusicDisplay {
                             if (!graphicalNote) {
                                 continue;
                             }
-                            if (!this.isGraphicalNoteInSelection(note, graphicalNote, selection, segments)) {
+                            const noteIsSelected: boolean = this.isGraphicalNoteInSelection(note, graphicalNote, selection, segments);
+                            const isUnplayableTieContinuation: boolean = this.isTieContinuationNote(note)
+                                && !this.isTieStartNoteSelected(note, selection, segments);
+                            if (!noteIsSelected || isUnplayableTieContinuation) {
                                 graphicalNote.setOpacity(nonSelectedOpacity);
                             } else {
                                 graphicalNote.setOpacity(1.0);
@@ -2960,10 +3092,10 @@ export class OpenSheetMusicDisplay {
                 let leftPx: number = horizontal.leftPx;
                 let rightPx: number = horizontal.rightPx;
                 if (systemIndex === selection.normalizedStart.systemIndex) {
-                    leftPx = selection.normalizedStart.xPx;
+                    leftPx = this.getSelectionBoundaryXPx(selection.normalizedStart);
                 }
                 if (systemIndex === selection.normalizedEnd.systemIndex) {
-                    rightPx = selection.normalizedEnd.xPx;
+                    rightPx = this.getSelectionBoundaryXPx(selection.normalizedEnd);
                 }
                 const minLeftPx: number = systemIndex === selection.normalizedStart.systemIndex
                     ? horizontal.leftPx - this.getRangeSelectionPreStartPaddingPx()
@@ -2979,6 +3111,13 @@ export class OpenSheetMusicDisplay {
             }
         }
         return segments;
+    }
+
+    private getSelectionBoundaryXPx(anchor: RangeSelectionAnchor): number {
+        if (!anchor) {
+            return undefined;
+        }
+        return Number.isFinite(anchor.selectionXPx) ? anchor.selectionXPx : anchor.xPx;
     }
 
     private isXInSelection(
@@ -3022,6 +3161,30 @@ export class OpenSheetMusicDisplay {
         }
         const noteTimestampReal: number = this.getAbsoluteTimestampRealForNote(note);
         return this.isTimestampRealInSelection(noteTimestampReal, selection);
+    }
+
+    private isTieContinuationNote(note: any): boolean {
+        const tieNotes: any[] = note?.NoteTie?.Notes;
+        if (!tieNotes || tieNotes.length < 2) {
+            return false;
+        }
+        return tieNotes[0] !== note;
+    }
+
+    private isTieStartNoteSelected(
+        note: any,
+        selection: RangeSelectionPayload,
+        segments: Array<{ systemIndex: number, leftPx: number, rightPx: number }>
+    ): boolean {
+        const tieStartNote: any = note?.NoteTie?.Notes?.[0];
+        if (!tieStartNote || tieStartNote === note) {
+            return false;
+        }
+        const tieStartGraphicalNote: GraphicalNote = this.rules.GNote(tieStartNote);
+        if (!tieStartGraphicalNote) {
+            return false;
+        }
+        return this.isGraphicalNoteInSelection(tieStartNote, tieStartGraphicalNote, selection, segments);
     }
 
     private getAbsoluteTimestampRealForNote(note: any): number {

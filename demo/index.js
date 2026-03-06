@@ -12,6 +12,7 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
     var sampleFolder = "",
         samples = {
             // "Summer Time": "summertime.musicxml",
+            "Czerny Etude no 1 op 299": "819.musicxml",
             "Clementi, M. - Sonatina Op.36 No.1 Pt.1": "MuzioClementi_SonatinaOpus36No1_Part1.xml",
             "Fingerings are oddly positioned": "1168-3.musicxml",
             "Chords but the chords are weirdly positioned": "836.musicxml",

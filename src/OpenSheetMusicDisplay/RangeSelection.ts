@@ -12,6 +12,11 @@ export interface RangeSelectionAnchor {
     staffIndex: number;
     x: number;
     xPx: number;
+    /** Semantic x-position used to determine which notes are included in the range.
+     * Can differ from visual handle x/xPx (e.g. when applying snap display offsets). */
+    selectionX?: number;
+    /** Semantic x-position in pixels used for note inclusion checks. */
+    selectionXPx?: number;
     yPx: number;
     heightPx: number;
 }
