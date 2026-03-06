@@ -2815,16 +2815,41 @@ export class OpenSheetMusicDisplay {
         buttonsContainer.style.flexDirection = "column";
         buttonsContainer.style.gap = "6px";
         buttonsContainer.style.zIndex = "9";
-
-        const leftMostXPx: number = Math.min(selection.normalizedStart.xPx, selection.normalizedEnd.xPx);
-        const topMostYPx: number = Math.min(selection.normalizedStart.yPx, selection.normalizedEnd.yPx);
-        buttonsContainer.style.left = `${Math.max(8, leftMostXPx - 40)}px`;
-        buttonsContainer.style.top = `${Math.max(8, topMostYPx)}px`;
-
         this.OnRangeSelectionControlsRender(buttonsContainer, selection);
-        if (buttonsContainer.childElementCount > 0) {
-            this.rangeInteractionOverlay.appendChild(buttonsContainer);
+        if (buttonsContainer.childElementCount < 1) {
+            return;
         }
+        const overlayWidthPx: number = this.rangeInteractionOverlay?.clientWidth ?? 0;
+        const overlayHeightPx: number = this.rangeInteractionOverlay?.clientHeight ?? 0;
+        const controlsWidthPx: number = buttonsContainer.offsetWidth;
+        const controlsHeightPx: number = buttonsContainer.offsetHeight;
+        const horizontalMarginPx: number = 10;
+        const verticalMarginPx: number = 8;
+
+        const rightMostXPx: number = Math.max(selection.normalizedStart.xPx, selection.normalizedEnd.xPx);
+        const topMostYPx: number = Math.min(selection.normalizedStart.yPx, selection.normalizedEnd.yPx);
+
+        // Keep controls near the active right boundary and only flip to the right side when needed.
+        const preferredLeftPx: number = rightMostXPx - controlsWidthPx - horizontalMarginPx;
+        const fallbackLeftPx: number = rightMostXPx + horizontalMarginPx;
+        let leftPx: number = preferredLeftPx;
+        if (leftPx < horizontalMarginPx) {
+            leftPx = fallbackLeftPx;
+        }
+        if (overlayWidthPx > 0) {
+            const maxLeftPx: number = Math.max(horizontalMarginPx, overlayWidthPx - controlsWidthPx - horizontalMarginPx);
+            leftPx = Math.min(maxLeftPx, Math.max(horizontalMarginPx, leftPx));
+        }
+
+        let topPx: number = Math.max(verticalMarginPx, topMostYPx);
+        if (overlayHeightPx > 0) {
+            const maxTopPx: number = Math.max(verticalMarginPx, overlayHeightPx - controlsHeightPx - verticalMarginPx);
+            topPx = Math.min(maxTopPx, Math.max(verticalMarginPx, topPx));
+        }
+
+        buttonsContainer.style.left = `${leftPx}px`;
+        buttonsContainer.style.top = `${topPx}px`;
+        this.rangeInteractionOverlay.appendChild(buttonsContainer);
     }
 
     private getSelectionLineColor(): string {
