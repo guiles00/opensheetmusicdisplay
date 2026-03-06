@@ -538,11 +538,13 @@ export class OpenSheetMusicDisplay {
         if (!startAnchor || !endAnchor) {
             return;
         }
-        this.dragStartAnchor = startAnchor;
-        this.dragCurrentAnchor = endAnchor;
+        const committedSelection: RangeSelectionPayload = this.createSelectionPayload("committed", startAnchor, endAnchor, false);
+        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(committedSelection, "both");
+        this.dragStartAnchor = paddedSelection.normalizedStart;
+        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
         this.pendingTouchRangeStartAnchor = undefined;
         this.renderRangeSelection();
-        this.emitRangeSelection("committed", startAnchor, endAnchor, false);
+        this.emitRangeSelection("committed", this.dragStartAnchor, this.dragCurrentAnchor, false);
     }
 
     /** Clears the interactive range selection and removes all related overlays. */
@@ -2717,8 +2719,15 @@ export class OpenSheetMusicDisplay {
         if (!refreshedStartAnchor || !refreshedEndAnchor) {
             return;
         }
-        this.dragStartAnchor = refreshedStartAnchor;
-        this.dragCurrentAnchor = refreshedEndAnchor;
+        const refreshedSelection: RangeSelectionPayload = this.createSelectionPayload(
+            "committed",
+            refreshedStartAnchor,
+            refreshedEndAnchor,
+            false
+        );
+        const paddedSelection: RangeSelectionPayload = this.applySelectionPadding(refreshedSelection, "both");
+        this.dragStartAnchor = paddedSelection.normalizedStart;
+        this.dragCurrentAnchor = paddedSelection.normalizedEnd;
     }
 
     private renderSelectionRangeOverlay(start: RangeSelectionAnchor, end: RangeSelectionAnchor): void {
