@@ -2826,12 +2826,21 @@ export class OpenSheetMusicDisplay {
         const horizontalMarginPx: number = 10;
         const verticalMarginPx: number = 8;
 
-        const rightMostXPx: number = Math.max(selection.normalizedStart.xPx, selection.normalizedEnd.xPx);
-        const topMostYPx: number = Math.min(selection.normalizedStart.yPx, selection.normalizedEnd.yPx);
+        const startAnchor: RangeSelectionAnchor = selection.normalizedStart;
+        const endAnchor: RangeSelectionAnchor = selection.normalizedEnd;
+        const sameSystemTolerancePx: number = 1;
+        let controlsAnchor: RangeSelectionAnchor = startAnchor;
+        if (endAnchor.yPx < startAnchor.yPx - sameSystemTolerancePx) {
+            // End handle is on a topmost system.
+            controlsAnchor = endAnchor;
+        } else if (Math.abs(endAnchor.yPx - startAnchor.yPx) <= sameSystemTolerancePx && endAnchor.xPx < startAnchor.xPx) {
+            // Same system: use the leftmost handle.
+            controlsAnchor = endAnchor;
+        }
 
-        // Keep controls near the active right boundary and only flip to the right side when needed.
-        const preferredLeftPx: number = rightMostXPx - controlsWidthPx - horizontalMarginPx;
-        const fallbackLeftPx: number = rightMostXPx + horizontalMarginPx;
+        // Place controls to the left of the selected anchor handle.
+        const preferredLeftPx: number = controlsAnchor.xPx - controlsWidthPx - horizontalMarginPx;
+        const fallbackLeftPx: number = controlsAnchor.xPx + horizontalMarginPx;
         let leftPx: number = preferredLeftPx;
         if (leftPx < horizontalMarginPx) {
             leftPx = fallbackLeftPx;
@@ -2841,7 +2850,7 @@ export class OpenSheetMusicDisplay {
             leftPx = Math.min(maxLeftPx, Math.max(horizontalMarginPx, leftPx));
         }
 
-        let topPx: number = Math.max(verticalMarginPx, topMostYPx);
+        let topPx: number = Math.max(verticalMarginPx, controlsAnchor.yPx);
         if (overlayHeightPx > 0) {
             const maxTopPx: number = Math.max(verticalMarginPx, overlayHeightPx - controlsHeightPx - verticalMarginPx);
             topPx = Math.min(maxTopPx, Math.max(verticalMarginPx, topPx));
