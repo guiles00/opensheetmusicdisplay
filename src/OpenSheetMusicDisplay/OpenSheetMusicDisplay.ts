@@ -4866,10 +4866,10 @@ export class OpenSheetMusicDisplay {
         const clearancePx: number = this.getMaskBarClearancePx(edge);
         if (edge === "end") {
             // Right handle — keep as-is.
-            return handleOuterPx + clearancePx - 8;
+            return handleOuterPx + clearancePx - 8 - 4;
         }
         // Nudge clear boundary right so the left mask meets the start handle without a bright strip.
-        return handleOuterPx - clearancePx + 16;
+        return handleOuterPx - clearancePx + 16 + 4;
     }
 
     private buildOutsideMaskSegments(selection: RangeSelectionPayload): OutsideMaskSegment[] {
