@@ -89,6 +89,24 @@ function mergeableUnison(a, b, staggerSameWholeNotes) {
   return true;
 }
 
+// Without this, two voices whose chords collide only through an inner/upper notehead render
+// fused together instead of staggered - e.g. https://app.piano-tree.com/library/10/481/16852,
+// measure 2 beat 3, where a quarter note in one voice sat on the same line as the top note of
+// a half-note chord in the other voice and both were drawn on top of each other. The old check
+// only compared each chord's lowest notehead, so it missed collisions like that one.
+function closestKeyLineDiff(a, b) {
+  let minDiff = Infinity;
+  for (const propsA of a.note.getKeyProps()) {
+    for (const propsB of b.note.getKeyProps()) {
+      const diff = Math.abs(propsA.line - propsB.line);
+      if (diff < minDiff) {
+        minDiff = diff;
+      }
+    }
+  }
+  return minDiff;
+}
+
 export class StaveNote extends StemmableNote {
   static get CATEGORY() { return 'stavenotes'; }
   static get STEM_UP() { return Stem.UP; }
@@ -209,7 +227,7 @@ export class StaveNote extends StemmableNote {
           //Vexflowpatch: Instead of shifting notes, remove the appropriate flag.
           //If we are sharing a line, switch one notes stem direction.
           //If we are sharing a line and in the same voice, only then offset one note
-          const lineDiff = Math.abs(noteU.line - noteL.line);
+          const lineDiff = closestKeyLineDiff(noteU, noteL);
           // Stagger (x-shift) only if the two notes share a line but can't overlap as a
           // unison - i.e. their notehead shapes or dots differ (see mergeableUnison).
           if (lineDiff === 0 && !mergeableUnison(noteU, noteL, stagger_same_whole_notes)) {
