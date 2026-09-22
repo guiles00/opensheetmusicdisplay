@@ -127,6 +127,9 @@ export class VexFlowGraphicalNote extends GraphicalNote {
      */
     public setVisible(visible: boolean, visibilityOptions: VisibilityOptions = {}): void {
         this.retainedVisibility = { visible, options: visibilityOptions };
+        if (this.deferWhileSystemDetached()) {
+            return;
+        }
         const applyToBeams: boolean = visibilityOptions.applyToBeams ?? true; // default option if not given
         const applyToLedgerLines: boolean = visibilityOptions.applyToLedgerLines ?? true;
         const applyToNotehead: boolean = visibilityOptions.applyToNotehead ?? true;
@@ -327,6 +330,45 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return slurSVGs;
     }
 
+    private static readonly pendingDetachedStateBySystem: WeakMap<Element, Set<VexFlowGraphicalNote>> =
+        new WeakMap<Element, Set<VexFlowGraphicalNote>>();
+
+    /**
+     * While virtualization has removed this note's system from the SVG, keep only the retained state and
+     * write it when the system is reattached, so bulk resets cost nothing for offscreen systems.
+     */
+    private deferWhileSystemDetached(): boolean {
+        const systemRoot: Element = this.getSVGGElement()?.closest(".osmd-system");
+        if (!systemRoot || systemRoot.parentNode) {
+            return false;
+        }
+        let pending: Set<VexFlowGraphicalNote> = VexFlowGraphicalNote.pendingDetachedStateBySystem.get(systemRoot);
+        if (!pending) {
+            pending = new Set<VexFlowGraphicalNote>();
+            VexFlowGraphicalNote.pendingDetachedStateBySystem.set(systemRoot, pending);
+        }
+        pending.add(this);
+        return true;
+    }
+
+    /** Writes the state deferred by {@link deferWhileSystemDetached} once a system is back in the SVG. */
+    public static flushDetachedSVGState(systemRoot: Element): void {
+        const pending: Set<VexFlowGraphicalNote> = VexFlowGraphicalNote.pendingDetachedStateBySystem.get(systemRoot);
+        if (!pending || !systemRoot.parentNode) {
+            return;
+        }
+        VexFlowGraphicalNote.pendingDetachedStateBySystem.delete(systemRoot);
+        for (const note of pending) {
+            if (note.retainedVisibility) {
+                note.setVisible(note.retainedVisibility.visible, note.retainedVisibility.options);
+            }
+            if (note.retainedColor) {
+                note.setColor(note.retainedColor.color, note.retainedColor.options);
+            }
+            note.setOpacity(note.opacity ?? 1);
+        }
+    }
+
     /** Drops the id index of a system whose subtree changed, e.g. once the drawer finishes drawing it. */
     public static invalidateSVGLookup(systemRoot: Element): void {
         VexFlowGraphicalNote.systemIdIndexes.delete(systemRoot);
@@ -429,6 +471,9 @@ export class VexFlowGraphicalNote extends GraphicalNote {
      */
     public setColor(color: string, coloringOptions: ColoringOptions = {}): void {
         this.retainedColor = { color, options: coloringOptions };
+        if (this.deferWhileSystemDetached()) {
+            return;
+        }
         const applyToBeams: boolean = coloringOptions.applyToBeams ?? false; // default if option not given
         const applyToFlag: boolean = coloringOptions.applyToFlag ?? true;
         const applyToLedgerLines: boolean = coloringOptions.applyToLedgerLines ?? false;
@@ -545,6 +590,9 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
     public setOpacity(opacity: number): void {
         this.opacity = opacity;
+        if (this.deferWhileSystemDetached()) {
+            return;
+        }
 
         let targetBeamOpacity: number = opacity;
         if (this.sourceNote.NoteBeam) {

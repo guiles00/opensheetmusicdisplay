@@ -40,6 +40,7 @@ import { PointF2D } from "../Common/DataObjects/PointF2D";
 import { RectangleF2D } from "../Common/DataObjects/RectangleF2D";
 import { tempoLabelFromBpm } from "../Common/Tempo/TempoLabelFromBpm";
 import { GraphicalStaffEntry } from "../MusicalScore/Graphical/GraphicalStaffEntry";
+import { VexFlowGraphicalNote } from "../MusicalScore/Graphical/VexFlow/VexFlowGraphicalNote";
 import { VerticalGraphicalStaffEntryContainer } from "../MusicalScore/Graphical/VerticalGraphicalStaffEntryContainer";
 import { AbstractGraphicalExpression } from "../MusicalScore/Graphical/AbstractGraphicalExpression";
 import { countLedgerLineNotesForTransposition as countLedgerLineNotesOnMusicSheet } from "./ledgerLineTranspositionCount";
@@ -64,6 +65,8 @@ import { SkyBottomLineCalculator } from "../MusicalScore/Graphical/SkyBottomLine
 import {
     ISystemVirtualizationOptions,
     ISystemVirtualizationStats,
+    ISystemLifecycleEvent,
+    SystemLifecycleListener,
     IVirtualSystemDescriptor,
     SystemVirtualizationController
 } from "./SystemVirtualizationController";
@@ -119,6 +122,13 @@ export class OpenSheetMusicDisplay {
             throw new Error("Please pass a valid div container to OpenSheetMusicDisplay");
         }
         this.systemVirtualization = new SystemVirtualizationController(this.container);
+        this.systemVirtualization.addLifecycleListener((event: ISystemLifecycleEvent): void => {
+            if (event.type === "attached") {
+                for (const root of event.roots) {
+                    VexFlowGraphicalNote.flushDetachedSVGState(root);
+                }
+            }
+        });
 
         if (options.autoResize === undefined) {
             options.autoResize = true;
@@ -548,7 +558,7 @@ export class OpenSheetMusicDisplay {
                 });
             }
         }
-        this.systemVirtualization.configureExpectedSystems(descriptors, (keys: string[]): void => {
+        this.systemVirtualization.configureExpectedSystems(descriptors, (keys: string[]): SVGGElement[] => {
             const indexesByPage: Map<number, number[]> = new Map<number, number[]>();
             for (const key of keys) {
                 const [pageNumberString, systemIndexString] = key.split(":");
@@ -561,17 +571,19 @@ export class OpenSheetMusicDisplay {
                 indexes.push(systemIndex);
                 indexesByPage.set(pageIndex, indexes);
             }
+            const firstNewGroup: number = this.drawer.SystemGroups.length;
             for (const [pageIndex, indexes] of indexesByPage) {
                 this.drawer.drawSystemIndexes(this.graphic, pageIndex, indexes.sort((a, b): number => a - b));
             }
             this.rangeSelectionElementCollector.invalidate();
-            this.reapplyStaffOpacityOverrides();
+            this.reapplyStaffOpacityOverrides(this.drawer.SystemGroups.slice(firstNewGroup));
             this.lastRangeOpacityKey = "";
             this.lastRangeOpacityDecorationsApplied = false;
             this.renderRangeSelection();
             if (this.drawingParameters.drawCursors) {
                 this.cursors.forEach(cursor => cursor.update());
             }
+            return this.drawer.SystemGroups.slice(firstNewGroup);
         });
     }
 
@@ -841,6 +853,11 @@ export class OpenSheetMusicDisplay {
     }
 
     /** Re-evaluate the active system window after an application-controlled scroll or layout change. */
+    /** Be notified when virtualization draws, reattaches or detaches systems, instead of observing the DOM. */
+    public addSystemLifecycleListener(listener: SystemLifecycleListener): () => void {
+        return this.systemVirtualization.addLifecycleListener(listener);
+    }
+
     public updateSystemVirtualization(): void {
         this.systemVirtualization.refresh();
     }
@@ -5880,8 +5897,8 @@ export class OpenSheetMusicDisplay {
         this.applyOpacityToStaffElements(staffIndex, resolvedOpacity);
     }
 
-    private applyOpacityToStaffElements(staffIndex: number, opacity: number): void {
-        const stafflineElements: SVGGElement[] = this.getStafflineElements(staffIndex);
+    private applyOpacityToStaffElements(staffIndex: number, opacity: number, withinRoots?: ParentNode[]): void {
+        const stafflineElements: SVGGElement[] = this.getStafflineElements(staffIndex, withinRoots);
         if (stafflineElements.length === 0) {
             return;
         }
@@ -5895,7 +5912,7 @@ export class OpenSheetMusicDisplay {
         }
     }
 
-    private getStafflineElements(staffIndex: number): SVGGElement[] {
+    private getStafflineElements(staffIndex: number, withinRoots?: ParentNode[]): SVGGElement[] {
         if (!Number.isFinite(staffIndex) || staffIndex < 0) {
             return [];
         }
@@ -5914,6 +5931,13 @@ export class OpenSheetMusicDisplay {
             }
         };
 
+        if (withinRoots) {
+            for (const root of withinRoots) {
+                addMatches(root);
+            }
+            return elements;
+        }
+
         if (this.drawer?.Backends?.length) {
             for (const backend of this.drawer.Backends) {
                 const rootElement: HTMLElement = backend.getRenderElement();
@@ -5927,6 +5951,12 @@ export class OpenSheetMusicDisplay {
 
         if (this.container && !visitedRoots.has(this.container)) {
             addMatches(this.container);
+        }
+
+        for (const systemGroup of this.drawer?.SystemGroups ?? []) {
+            if (!systemGroup.isConnected) {
+                addMatches(systemGroup);
+            }
         }
 
         return elements;
@@ -5948,12 +5978,12 @@ export class OpenSheetMusicDisplay {
         return Math.min(1, Math.max(0, candidate));
     }
 
-    private reapplyStaffOpacityOverrides(): void {
+    private reapplyStaffOpacityOverrides(withinRoots?: ParentNode[]): void {
         if (this.staffOpacityOverrides.size === 0) {
             return;
         }
         for (const [staffIndex, storedOpacity] of this.staffOpacityOverrides.entries()) {
-            this.applyOpacityToStaffElements(staffIndex, storedOpacity);
+            this.applyOpacityToStaffElements(staffIndex, storedOpacity, withinRoots);
         }
     }
 }

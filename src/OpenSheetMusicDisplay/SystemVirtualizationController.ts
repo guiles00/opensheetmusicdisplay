@@ -13,6 +13,17 @@ export interface ISystemVirtualizationStats {
     unmaterializedSystems: number;
 }
 
+export type SystemLifecycleEventType = "materialized" | "attached" | "detached";
+
+/** Systems whose SVG was drawn for the first time, reinserted, or removed from the live DOM in one update. */
+export interface ISystemLifecycleEvent {
+    type: SystemLifecycleEventType;
+    keys: string[];
+    roots: SVGGElement[];
+}
+
+export type SystemLifecycleListener = (event: ISystemLifecycleEvent) => void;
+
 export interface IVirtualSystemDescriptor {
     key: string;
     svg: SVGSVGElement;
@@ -28,6 +39,19 @@ interface VirtualizedSystem {
     bottom: number;
     attached: boolean;
 }
+
+interface IndexedSystem {
+    key: string;
+    top: number;
+    bottom: number;
+}
+
+interface SvgSystemIndex {
+    systems: IndexedSystem[];
+    maxBottomThrough: number[];
+}
+
+type MaterializeSystems = (keys: string[]) => SVGGElement[] | void;
 
 interface VirtualizationViewport {
     top: number;
@@ -49,7 +73,10 @@ export class SystemVirtualizationController {
     private frameRequest: number | undefined;
     private materializeFrameRequest: number | undefined;
     private readonly pendingMaterializationKeys: Set<string> = new Set<string>();
-    private materializeSystems: ((keys: string[]) => void) | undefined;
+    private materializeSystems: MaterializeSystems | undefined;
+    private systemIndex: Map<SVGSVGElement, SvgSystemIndex> | undefined;
+    private readonly attachedKeys: Set<string> = new Set<string>();
+    private readonly lifecycleListeners: Set<SystemLifecycleListener> = new Set<SystemLifecycleListener>();
 
     public constructor(container: HTMLElement) {
         this.container = container;
@@ -72,23 +99,50 @@ export class SystemVirtualizationController {
         this.enabled = false;
         this.disableListeners();
         if (restore) {
-            for (const system of this.systems.values()) {
-                this.attach(system);
+            const attached: [string, SVGGElement][] = [];
+            for (const [key, system] of this.systems) {
+                if (this.attach(key, system)) {
+                    attached.push([key, system.group]);
+                }
             }
+            this.emit("attached", attached);
         }
     }
 
     /** Register the full laid-out score, including systems that have not been drawn yet. */
     public configureExpectedSystems(
         systems: IVirtualSystemDescriptor[],
-        materialize: (keys: string[]) => void
+        materialize: MaterializeSystems
     ): void {
         this.expectedSystems.clear();
         for (const system of systems) {
             this.expectedSystems.set(system.key, system);
         }
+        this.systemIndex = undefined;
         this.materializeSystems = materialize;
         this.refresh();
+    }
+
+    /** Subscribe to system materialization, attach and detach; returns an unsubscribe function. */
+    public addLifecycleListener(listener: SystemLifecycleListener): () => void {
+        this.lifecycleListeners.add(listener);
+        return (): void => {
+            this.lifecycleListeners.delete(listener);
+        };
+    }
+
+    private emit(type: SystemLifecycleEventType, systems: [string, SVGGElement][]): void {
+        if (systems.length === 0 || this.lifecycleListeners.size === 0) {
+            return;
+        }
+        const event: ISystemLifecycleEvent = {
+            type,
+            keys: systems.map(([key]) => key),
+            roots: systems.map(([, root]) => root)
+        };
+        for (const listener of Array.from(this.lifecycleListeners)) {
+            listener(event);
+        }
     }
 
     /** Drop references before OSMD destroys/replaces a backend. */
@@ -104,6 +158,8 @@ export class SystemVirtualizationController {
         this.pendingMaterializationKeys.clear();
         this.systems.clear();
         this.expectedSystems.clear();
+        this.attachedKeys.clear();
+        this.systemIndex = undefined;
         this.materializeSystems = undefined;
     }
 
@@ -112,17 +168,22 @@ export class SystemVirtualizationController {
         if (!this.enabled || typeof document === "undefined") {
             return;
         }
-        this.discoverRenderedSystems();
+        this.emit("materialized", this.discoverRenderedSystems());
         this.updateNow();
         // Layout may not have settled yet right after this DOM mutation (see the null-CTM handling in
         // updateNow()); schedule one more evaluation next frame to catch what couldn't be measured above.
         this.scheduleUpdate();
     }
 
-    private discoverRenderedSystems(): void {
-        const groups: NodeListOf<SVGGElement> =
-            this.container.querySelectorAll<SVGGElement>("g.osmd-system[data-osmd-system-key]");
-        for (const group of Array.from(groups)) {
+    private discoverRenderedSystems(): [string, SVGGElement][] {
+        return this.registerSystemGroups(Array.from(
+            this.container.querySelectorAll<SVGGElement>("g.osmd-system[data-osmd-system-key]")
+        ));
+    }
+
+    private registerSystemGroups(groups: SVGGElement[]): [string, SVGGElement][] {
+        const registered: [string, SVGGElement][] = [];
+        for (const group of groups) {
             const key: string = group.dataset.osmdSystemKey;
             if (!key || this.systems.has(key)) {
                 continue;
@@ -131,16 +192,97 @@ export class SystemVirtualizationController {
             if (!svg || !group.parentNode) {
                 continue;
             }
-            const anchor: Comment = document.createComment(`osmd-system:${key}`);
-            group.parentNode.insertBefore(anchor, group);
             const top: number = Number.parseFloat(group.dataset.osmdSystemTop ?? "");
             const bottom: number = Number.parseFloat(group.dataset.osmdSystemBottom ?? "");
             if (!Number.isFinite(top) || !Number.isFinite(bottom)) {
-                anchor.remove();
                 continue;
             }
+            const anchor: Comment = document.createComment(`osmd-system:${key}`);
+            group.parentNode.insertBefore(anchor, group);
             this.systems.set(key, { group, anchor, svg, top, bottom, attached: true });
+            this.attachedKeys.add(key);
+            if (!this.expectedSystems.has(key)) {
+                this.systemIndex = undefined;
+            }
+            registered.push([key, group]);
         }
+        return registered;
+    }
+
+    private materialize(keys: string[]): void {
+        const groups: SVGGElement[] | void = this.materializeSystems?.(keys);
+        this.emit("materialized", groups ? this.registerSystemGroups(groups) : this.discoverRenderedSystems());
+    }
+
+    /** Systems per SVG in vertical order, so a viewport window is found by binary search. */
+    private getSystemIndex(): Map<SVGSVGElement, SvgSystemIndex> {
+        if (this.systemIndex) {
+            return this.systemIndex;
+        }
+        const bySvg: Map<SVGSVGElement, IndexedSystem[]> = new Map<SVGSVGElement, IndexedSystem[]>();
+        const add: (svg: SVGSVGElement, system: IndexedSystem) => void = (svg: SVGSVGElement, system: IndexedSystem): void => {
+            const systems: IndexedSystem[] = bySvg.get(svg);
+            if (systems) {
+                systems.push(system);
+            } else {
+                bySvg.set(svg, [system]);
+            }
+        };
+        for (const expected of this.expectedSystems.values()) {
+            add(expected.svg, { key: expected.key, top: expected.top, bottom: expected.bottom });
+        }
+        for (const [key, system] of this.systems) {
+            if (!this.expectedSystems.has(key)) {
+                add(system.svg, { key, top: system.top, bottom: system.bottom });
+            }
+        }
+        this.systemIndex = new Map<SVGSVGElement, SvgSystemIndex>();
+        for (const [svg, systems] of bySvg) {
+            systems.sort((a, b): number => a.top - b.top || a.bottom - b.bottom);
+            const maxBottomThrough: number[] = [];
+            let maxBottom: number = Number.NEGATIVE_INFINITY;
+            for (const system of systems) {
+                maxBottom = Math.max(maxBottom, system.bottom);
+                maxBottomThrough.push(maxBottom);
+            }
+            this.systemIndex.set(svg, { systems, maxBottomThrough });
+        }
+        return this.systemIndex;
+    }
+
+    private systemsIntersecting(
+        index: SvgSystemIndex,
+        matrix: DOMMatrix,
+        minY: number,
+        maxY: number
+    ): { system: IndexedSystem, top: number, bottom: number }[] {
+        const sorted: boolean = matrix.d > 0;
+        let first: number = 0;
+        if (sorted) {
+            const localMinY: number = (minY - matrix.f) / matrix.d - 1;
+            let high: number = index.systems.length;
+            while (first < high) {
+                const mid: number = Math.floor((first + high) / 2);
+                if (index.maxBottomThrough[mid] < localMinY) {
+                    first = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+        }
+        const hits: { system: IndexedSystem, top: number, bottom: number }[] = [];
+        for (let i: number = first; i < index.systems.length; i++) {
+            const system: IndexedSystem = index.systems[i];
+            const top: number = new DOMPoint(0, system.top).matrixTransform(matrix).y;
+            if (sorted && top > maxY) {
+                break;
+            }
+            const bottom: number = new DOMPoint(0, system.bottom).matrixTransform(matrix).y;
+            if (bottom >= minY && top <= maxY) {
+                hits.push({ system, top, bottom });
+            }
+        }
+        return hits;
     }
 
     public updateNow(): void {
@@ -155,37 +297,33 @@ export class SystemVirtualizationController {
         const maxY: number = viewport.bottom + viewport.height * this.overscanViewports;
         const missingVisibleKeys: string[] = [];
         const missingOverscanKeys: string[] = [];
-        const matrices: Map<SVGSVGElement, DOMMatrix> = new Map<SVGSVGElement, DOMMatrix>();
-        const getMatrix: (svg: SVGSVGElement) => DOMMatrix = (svg: SVGSVGElement): DOMMatrix => {
-            if (matrices.has(svg)) {
-                return matrices.get(svg)!;
-            }
+        const inRange: Set<string> = new Set<string>();
+        const measuredSvgs: Set<SVGSVGElement> = new Set<SVGSVGElement>();
+        for (const [svg, index] of this.getSystemIndex()) {
+            // getScreenCTM() forces a synchronous layout flush, so read it once per SVG before any DOM writes.
             const matrix: DOMMatrix = svg.getScreenCTM();
-            matrices.set(svg, matrix);
-            return matrix;
-        };
-        for (const expected of this.expectedSystems.values()) {
-            if (this.systems.has(expected.key)) {
-                continue;
-            }
-            const matrix: DOMMatrix = getMatrix(expected.svg);
             if (!matrix) {
+                // Not measurable right now (e.g. mid-backend-swap): leave these systems as they are; the
+                // follow-up frame scheduled in refresh() re-evaluates them once geometry is available.
                 continue;
             }
-            const top: number = new DOMPoint(0, expected.top).matrixTransform(matrix).y;
-            const bottom: number = new DOMPoint(0, expected.bottom).matrixTransform(matrix).y;
-            if (bottom >= viewport.top && top <= viewport.bottom) {
-                missingVisibleKeys.push(expected.key);
-            } else if (bottom >= minY && top <= maxY) {
-                missingOverscanKeys.push(expected.key);
+            measuredSvgs.add(svg);
+            for (const hit of this.systemsIntersecting(index, matrix, minY, maxY)) {
+                inRange.add(hit.system.key);
+                if (this.systems.has(hit.system.key)) {
+                    continue;
+                }
+                if (hit.bottom >= viewport.top && hit.top <= viewport.bottom) {
+                    missingVisibleKeys.push(hit.system.key);
+                } else {
+                    missingOverscanKeys.push(hit.system.key);
+                }
             }
         }
         // Systems intersecting the real viewport are urgent: draw them now so cursor jumps and fast
-        // scrolling never expose a blank line. Overscan is speculative and is deliberately spread over
-        // future frames below, preventing a large viewport window from becoming one long task.
+        // scrolling never expose a blank line. Overscan is speculative and is spread over later frames.
         if (missingVisibleKeys.length > 0 && this.materializeSystems) {
-            this.materializeSystems(missingVisibleKeys);
-            this.discoverRenderedSystems();
+            this.materialize(missingVisibleKeys);
         }
         this.pendingMaterializationKeys.clear();
         for (const key of missingOverscanKeys) {
@@ -194,42 +332,27 @@ export class SystemVirtualizationController {
             }
         }
         this.scheduleNextMaterialization();
-        // Read every system's position before mutating any of them: getScreenCTM() forces a synchronous
-        // layout flush, so interleaving reads with attach()/detach() writes would thrash layout once per
-        // system instead of once total.
-        const toAttach: VirtualizedSystem[] = [];
-        const toDetach: VirtualizedSystem[] = [];
-        for (const system of this.systems.values()) {
-            const matrix: DOMMatrix = getMatrix(system.svg);
-            if (!matrix) {
-                // Position not measurable right now (e.g. mid-backend-swap) - leave this system's DOM
-                // state as-is rather than guessing attached. The next refresh() (scroll/resize, or the
-                // follow-up frame scheduled in refresh()) will re-evaluate it once geometry is available.
-                continue;
-            }
-            const top: number = new DOMPoint(0, system.top).matrixTransform(matrix).y;
-            const bottom: number = new DOMPoint(0, system.bottom).matrixTransform(matrix).y;
-            if (bottom >= minY && top <= maxY) {
-                toAttach.push(system);
-            } else {
-                toDetach.push(system);
+
+        const attached: [string, SVGGElement][] = [];
+        for (const key of inRange) {
+            const system: VirtualizedSystem = this.systems.get(key);
+            if (system && this.attach(key, system)) {
+                attached.push([key, system.group]);
             }
         }
-        for (const system of toAttach) {
-            this.attach(system);
+        const detached: [string, SVGGElement][] = [];
+        for (const key of Array.from(this.attachedKeys)) {
+            const system: VirtualizedSystem = this.systems.get(key);
+            if (system && !inRange.has(key) && measuredSvgs.has(system.svg) && this.detach(key, system)) {
+                detached.push([key, system.group]);
+            }
         }
-        for (const system of toDetach) {
-            this.detach(system);
-        }
+        this.emit("attached", attached);
+        this.emit("detached", detached);
     }
 
     public get stats(): ISystemVirtualizationStats {
-        let attachedSystems: number = 0;
-        for (const system of this.systems.values()) {
-            if (system.attached) {
-                attachedSystems++;
-            }
-        }
+        const attachedSystems: number = this.attachedKeys.size;
         return {
             totalSystems: Math.max(this.expectedSystems.size, this.systems.size),
             materializedSystems: this.systems.size,
@@ -266,8 +389,7 @@ export class SystemVirtualizationController {
             }
             this.pendingMaterializationKeys.delete(next.value);
             if (!this.systems.has(next.value)) {
-                this.materializeSystems([next.value]);
-                this.discoverRenderedSystems();
+                this.materialize([next.value]);
             }
             this.scheduleNextMaterialization();
         });
@@ -281,20 +403,24 @@ export class SystemVirtualizationController {
         return { top: rect.top, bottom: rect.bottom, height: rect.height };
     }
 
-    private attach(system: VirtualizedSystem): void {
+    private attach(key: string, system: VirtualizedSystem): boolean {
         if (system.attached) {
-            return;
+            return false;
         }
         system.anchor.parentNode?.insertBefore(system.group, system.anchor.nextSibling);
         system.attached = true;
+        this.attachedKeys.add(key);
+        return true;
     }
 
-    private detach(system: VirtualizedSystem): void {
+    private detach(key: string, system: VirtualizedSystem): boolean {
         if (!system.attached) {
-            return;
+            return false;
         }
         system.group.remove();
         system.attached = false;
+        this.attachedKeys.delete(key);
+        return true;
     }
 
     private disableListeners(): void {
