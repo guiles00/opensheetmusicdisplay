@@ -3,6 +3,10 @@ export interface ISystemVirtualizationOptions {
     scrollElement?: HTMLElement | Window;
     /** Extra viewport heights kept mounted above and below the visible area. Defaults to 1. */
     overscanViewports?: number;
+    /** Milliseconds per frame spent drawing offscreen systems shortly after scrolling. Defaults to 4. */
+    activeMaterializationBudgetMs?: number;
+    /** Milliseconds per frame spent drawing offscreen systems while the score is idle. Defaults to 10. */
+    idleMaterializationBudgetMs?: number;
 }
 
 export interface ISystemVirtualizationStats {
@@ -11,6 +15,11 @@ export interface ISystemVirtualizationStats {
     attachedSystems: number;
     detachedSystems: number;
     unmaterializedSystems: number;
+    /** Offscreen systems queued for drawing. */
+    pendingMaterializations: number;
+    /** Duration of the most recent system draw, and the running average used for frame budgeting. */
+    lastMaterializationMs: number;
+    averageMaterializationMs: number;
 }
 
 export type SystemLifecycleEventType = "materialized" | "attached" | "detached";
@@ -72,7 +81,14 @@ export class SystemVirtualizationController {
     private overscanViewports: number = 1;
     private frameRequest: number | undefined;
     private materializeFrameRequest: number | undefined;
-    private readonly pendingMaterializationKeys: Set<string> = new Set<string>();
+    private pendingMaterializationKeys: string[] = [];
+    private activeBudgetMs: number = 4;
+    private idleBudgetMs: number = 10;
+    private lastScrollAt: number = Number.NEGATIVE_INFINITY;
+    private lastContentOffset: number | undefined;
+    private scrollDirection: number = 0;
+    private lastMaterializationMs: number = 0;
+    private averageMaterializationMs: number = 0;
     private materializeSystems: MaterializeSystems | undefined;
     private systemIndex: Map<SVGSVGElement, SvgSystemIndex> | undefined;
     private readonly attachedKeys: Set<string> = new Set<string>();
@@ -90,7 +106,9 @@ export class SystemVirtualizationController {
         this.enabled = true;
         this.target = options?.scrollElement ?? window;
         this.overscanViewports = Math.max(0, options?.overscanViewports ?? 1);
-        this.target.addEventListener("scroll", this.scheduleUpdate, { passive: true });
+        this.activeBudgetMs = Math.max(0, options?.activeMaterializationBudgetMs ?? 4);
+        this.idleBudgetMs = Math.max(0, options?.idleMaterializationBudgetMs ?? 10);
+        this.target.addEventListener("scroll", this.onScroll, { passive: true });
         window.addEventListener("resize", this.scheduleUpdate, { passive: true });
         this.refresh();
     }
@@ -155,7 +173,9 @@ export class SystemVirtualizationController {
             window.cancelAnimationFrame(this.materializeFrameRequest);
         }
         this.materializeFrameRequest = undefined;
-        this.pendingMaterializationKeys.clear();
+        this.pendingMaterializationKeys = [];
+        this.lastContentOffset = undefined;
+        this.scrollDirection = 0;
         this.systems.clear();
         this.expectedSystems.clear();
         this.attachedKeys.clear();
@@ -210,8 +230,15 @@ export class SystemVirtualizationController {
     }
 
     private materialize(keys: string[]): void {
+        const startedAt: number = performance.now();
         const groups: SVGGElement[] | void = this.materializeSystems?.(keys);
-        this.emit("materialized", groups ? this.registerSystemGroups(groups) : this.discoverRenderedSystems());
+        const registered: [string, SVGGElement][] = groups ? this.registerSystemGroups(groups) : this.discoverRenderedSystems();
+        const perSystemMs: number = (performance.now() - startedAt) / Math.max(1, keys.length);
+        this.lastMaterializationMs = perSystemMs;
+        this.averageMaterializationMs = this.averageMaterializationMs === 0
+            ? perSystemMs
+            : this.averageMaterializationMs * 0.8 + perSystemMs * 0.2;
+        this.emit("materialized", registered);
     }
 
     /** Systems per SVG in vertical order, so a viewport window is found by binary search. */
@@ -296,7 +323,8 @@ export class SystemVirtualizationController {
         const minY: number = viewport.top - viewport.height * this.overscanViewports;
         const maxY: number = viewport.bottom + viewport.height * this.overscanViewports;
         const missingVisibleKeys: string[] = [];
-        const missingOverscanKeys: string[] = [];
+        const missingOverscan: { key: string, distance: number }[] = [];
+        let contentOffset: number | undefined;
         const inRange: Set<string> = new Set<string>();
         const measuredSvgs: Set<SVGSVGElement> = new Set<SVGSVGElement>();
         for (const [svg, index] of this.getSystemIndex()) {
@@ -308,6 +336,7 @@ export class SystemVirtualizationController {
                 continue;
             }
             measuredSvgs.add(svg);
+            contentOffset ??= matrix.f;
             for (const hit of this.systemsIntersecting(index, matrix, minY, maxY)) {
                 inRange.add(hit.system.key);
                 if (this.systems.has(hit.system.key)) {
@@ -316,7 +345,11 @@ export class SystemVirtualizationController {
                 if (hit.bottom >= viewport.top && hit.top <= viewport.bottom) {
                     missingVisibleKeys.push(hit.system.key);
                 } else {
-                    missingOverscanKeys.push(hit.system.key);
+                    const below: boolean = hit.top > viewport.bottom;
+                    const distance: number = below ? hit.top - viewport.bottom : viewport.top - hit.bottom;
+                    const ahead: boolean = this.scrollDirection !== 0 && (below ? this.scrollDirection > 0 : this.scrollDirection < 0);
+                    const behind: boolean = this.scrollDirection !== 0 && !ahead;
+                    missingOverscan.push({ key: hit.system.key, distance: distance * (ahead ? 0.5 : behind ? 2 : 1) });
                 }
             }
         }
@@ -325,12 +358,16 @@ export class SystemVirtualizationController {
         if (missingVisibleKeys.length > 0 && this.materializeSystems) {
             this.materialize(missingVisibleKeys);
         }
-        this.pendingMaterializationKeys.clear();
-        for (const key of missingOverscanKeys) {
-            if (!this.systems.has(key)) {
-                this.pendingMaterializationKeys.add(key);
+        if (contentOffset !== undefined) {
+            if (this.lastContentOffset !== undefined && contentOffset !== this.lastContentOffset) {
+                this.scrollDirection = contentOffset < this.lastContentOffset ? 1 : -1;
             }
+            this.lastContentOffset = contentOffset;
         }
+        this.pendingMaterializationKeys = missingOverscan
+            .filter(pending => !this.systems.has(pending.key))
+            .sort((a, b): number => a.distance - b.distance)
+            .map(pending => pending.key);
         this.scheduleNextMaterialization();
 
         const attached: [string, SVGGElement][] = [];
@@ -358,9 +395,17 @@ export class SystemVirtualizationController {
             materializedSystems: this.systems.size,
             attachedSystems,
             detachedSystems: this.systems.size - attachedSystems,
-            unmaterializedSystems: Math.max(0, this.expectedSystems.size - this.systems.size)
+            unmaterializedSystems: Math.max(0, this.expectedSystems.size - this.systems.size),
+            pendingMaterializations: this.pendingMaterializationKeys.length,
+            lastMaterializationMs: this.lastMaterializationMs,
+            averageMaterializationMs: this.averageMaterializationMs
         };
     }
+
+    private readonly onScroll: () => void = (): void => {
+        this.lastScrollAt = performance.now();
+        this.scheduleUpdate();
+    };
 
     private readonly scheduleUpdate: () => void = (): void => {
         if (!this.enabled || this.frameRequest !== undefined) {
@@ -372,8 +417,13 @@ export class SystemVirtualizationController {
         });
     };
 
+    /**
+     * Draws queued offscreen systems nearest-first within a per-frame time budget: smaller right after
+     * scrolling so input stays smooth, larger when idle so the overscan fills quickly. At least one system
+     * is drawn per frame. Browsers pause animation frames in background tabs, which pauses this too.
+     */
     private scheduleNextMaterialization(): void {
-        if (!this.enabled || !this.materializeSystems || this.pendingMaterializationKeys.size === 0 ||
+        if (!this.enabled || !this.materializeSystems || this.pendingMaterializationKeys.length === 0 ||
             this.materializeFrameRequest !== undefined) {
             return;
         }
@@ -382,14 +432,19 @@ export class SystemVirtualizationController {
             if (!this.enabled || !this.materializeSystems) {
                 return;
             }
-            const iterator: Iterator<string> = this.pendingMaterializationKeys.values();
-            const next: IteratorResult<string> = iterator.next();
-            if (next.done) {
-                return;
-            }
-            this.pendingMaterializationKeys.delete(next.value);
-            if (!this.systems.has(next.value)) {
-                this.materialize([next.value]);
+            const startedAt: number = performance.now();
+            const budgetMs: number = startedAt - this.lastScrollAt < 200 ? this.activeBudgetMs : this.idleBudgetMs;
+            let drawn: number = 0;
+            while (this.pendingMaterializationKeys.length > 0) {
+                const elapsed: number = performance.now() - startedAt;
+                if (drawn > 0 && elapsed + this.averageMaterializationMs > budgetMs) {
+                    break;
+                }
+                const key: string = this.pendingMaterializationKeys.shift();
+                if (!this.systems.has(key)) {
+                    this.materialize([key]);
+                    drawn++;
+                }
             }
             this.scheduleNextMaterialization();
         });
@@ -427,7 +482,7 @@ export class SystemVirtualizationController {
         if (typeof window === "undefined") {
             return;
         }
-        this.target?.removeEventListener("scroll", this.scheduleUpdate);
+        this.target?.removeEventListener("scroll", this.onScroll);
         window.removeEventListener("resize", this.scheduleUpdate);
         if (this.frameRequest !== undefined) {
             window.cancelAnimationFrame(this.frameRequest);
@@ -437,6 +492,6 @@ export class SystemVirtualizationController {
             window.cancelAnimationFrame(this.materializeFrameRequest);
             this.materializeFrameRequest = undefined;
         }
-        this.pendingMaterializationKeys.clear();
+        this.pendingMaterializationKeys = [];
     }
 }

@@ -86,6 +86,7 @@ async function benchmarkFixture(name: string, fixture: ILargeScoreFixtureOptions
     osmd.enableSystemVirtualization({ scrollElement, overscanViewports: 1 });
     const virtualizedRenderMs: number = time(() => osmd.renderVirtualized({ initialSystems: 3 }));
     const totalSystems: number = osmd.SystemVirtualizationStats.totalSystems;
+    const heapAfterRender: number | undefined = heapMegabytes();
 
     const firstPassUpdates: number[] = [];
     const materializationPerSystem: number[] = [];
@@ -136,6 +137,7 @@ async function benchmarkFixture(name: string, fixture: ILargeScoreFixtureOptions
         retainedSvgNodes: retainedSvgNodeCount(osmd),
         fullRenderDomNodes: fullDomNodes,
         heapBeforeMb: heapBefore,
+        heapAfterRenderMb: heapAfterRender,
         heapAfterScrollMb: heapMegabytes()
     };
     osmd.disableSystemVirtualization();

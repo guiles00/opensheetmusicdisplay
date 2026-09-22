@@ -36,7 +36,7 @@ describe("SystemVirtualizationController", () => {
         controller.enable({ scrollElement, overscanViewports: 0 });
         expect(first.isConnected).to.equal(true);
         expect(distant.isConnected).to.equal(false);
-        expect(controller.stats).to.deep.equal({
+        expect(controller.stats).to.deep.include({
             totalSystems: 2,
             materializedSystems: 2,
             attachedSystems: 1,

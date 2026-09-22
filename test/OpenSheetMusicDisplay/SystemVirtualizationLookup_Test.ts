@@ -171,4 +171,67 @@ describe("System virtualization lookup", () => {
         note.setOpacity(0.5);
         expect(note.getNoteheadSVGs()[0].querySelector("path").getAttribute("opacity")).to.equal("0.5");
     });
+
+    const nextFrame: () => Promise<void> = (): Promise<void> =>
+        new Promise<void>(resolve => requestAnimationFrame((): void => resolve()));
+
+    async function mountVirtualized(budgets: { active: number, idle: number }): Promise<{
+        osmd: OpenSheetMusicDisplay; scrollElement: HTMLDivElement;
+    }> {
+        const scrollElement: HTMLDivElement = document.createElement("div");
+        scrollElement.style.cssText = "width:900px;height:400px;overflow:auto";
+        const container: HTMLDivElement = document.createElement("div");
+        container.style.width = "900px";
+        scrollElement.appendChild(container);
+        document.body.appendChild(scrollElement);
+        const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container, { autoResize: false });
+        osmd.enableSystemVirtualization({
+            scrollElement, overscanViewports: 2,
+            activeMaterializationBudgetMs: budgets.active, idleMaterializationBudgetMs: budgets.idle
+        });
+        await osmd.load(generateLargePianoScore({ measures: 120 }));
+        osmd.renderVirtualized({ initialSystems: 1 });
+        return { osmd, scrollElement };
+    }
+
+    it("queues offscreen systems nearest first, favoring the scroll direction", async () => {
+        const { osmd, scrollElement } = await mountVirtualized({ active: 0, idle: 0 });
+        const controller: any = (osmd as any).systemVirtualization;
+        scrollElement.scrollTop = scrollElement.scrollHeight / 3;
+        osmd.updateSystemVirtualization();
+        scrollElement.scrollTop += 200;
+        osmd.updateSystemVirtualization();
+        const queue: string[] = [...controller.pendingMaterializationKeys];
+        expect(queue.length).to.be.greaterThan(1);
+        const indexOf: (key: string) => number = (key: string): number => Number(key.split(":")[1]);
+        const visible: number[] = Array.from(scrollElement.querySelectorAll<SVGGElement>("g.osmd-system"))
+            .map(group => indexOf(group.dataset.osmdSystemKey));
+        const lastVisible: number = Math.max(...visible);
+        expect(indexOf(queue[0])).to.equal(lastVisible + 1);
+        expect(osmd.SystemVirtualizationStats.pendingMaterializations).to.equal(queue.length);
+        osmd.disableSystemVirtualization();
+        scrollElement.remove();
+    });
+
+    it("draws one queued system per frame with no budget and drains the queue with a large one", async () => {
+        const small: { osmd: OpenSheetMusicDisplay, scrollElement: HTMLDivElement } = await mountVirtualized({ active: 0, idle: 0 });
+        small.osmd.updateSystemVirtualization();
+        const pendingBefore: number = small.osmd.SystemVirtualizationStats.pendingMaterializations;
+        expect(pendingBefore).to.be.greaterThan(1);
+        await nextFrame();
+        await nextFrame();
+        expect(small.osmd.SystemVirtualizationStats.pendingMaterializations).to.be.at.least(pendingBefore - 2);
+        expect(small.osmd.SystemVirtualizationStats.averageMaterializationMs).to.be.greaterThan(0);
+        small.osmd.disableSystemVirtualization();
+        small.scrollElement.remove();
+
+        const large: { osmd: OpenSheetMusicDisplay, scrollElement: HTMLDivElement } = await mountVirtualized({ active: 10000, idle: 10000 });
+        large.osmd.updateSystemVirtualization();
+        expect(large.osmd.SystemVirtualizationStats.pendingMaterializations).to.be.greaterThan(1);
+        await nextFrame();
+        await nextFrame();
+        expect(large.osmd.SystemVirtualizationStats.pendingMaterializations).to.equal(0);
+        large.osmd.disableSystemVirtualization();
+        large.scrollElement.remove();
+    });
 });
