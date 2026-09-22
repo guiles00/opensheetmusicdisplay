@@ -35,6 +35,9 @@ import { GraphicalChordSymbolContainer } from "./GraphicalChordSymbolContainer";
  * The graphical counterpart of a [[MusicSheet]]
  */
 export class GraphicalMusicSheet {
+    private static nextLayoutGeneration: number = 1;
+    private layoutGeneration: number = GraphicalMusicSheet.nextLayoutGeneration++;
+
     constructor(musicSheet: MusicSheet, calculator: MusicSheetCalculator) {
         this.musicSheet = musicSheet;
         this.numberOfStaves = this.musicSheet.Staves.length;
@@ -187,14 +190,24 @@ export class GraphicalMusicSheet {
         }
     }
 
+    /** Changes whenever graphical objects may have been replaced, so derived indexes know to rebuild. */
+    public get LayoutGeneration(): number {
+        return this.layoutGeneration;
+    }
+
     public Initialize(): void {
         this.verticalGraphicalStaffEntryContainers = [];
         this.musicPages = [];
         this.measureList = [];
+        this.layoutGeneration = GraphicalMusicSheet.nextLayoutGeneration++;
     }
 
     public reCalculate(): void {
-        this.calculator.calculate();
+        try {
+            this.calculator.calculate();
+        } finally {
+            this.layoutGeneration = GraphicalMusicSheet.nextLayoutGeneration++;
+        }
     }
 
     // unused method

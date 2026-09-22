@@ -40,6 +40,7 @@ import { PointF2D } from "../Common/DataObjects/PointF2D";
 import { RectangleF2D } from "../Common/DataObjects/RectangleF2D";
 import { tempoLabelFromBpm } from "../Common/Tempo/TempoLabelFromBpm";
 import { GraphicalStaffEntry } from "../MusicalScore/Graphical/GraphicalStaffEntry";
+import { VerticalGraphicalStaffEntryContainer } from "../MusicalScore/Graphical/VerticalGraphicalStaffEntryContainer";
 import { AbstractGraphicalExpression } from "../MusicalScore/Graphical/AbstractGraphicalExpression";
 import { countLedgerLineNotesForTransposition as countLedgerLineNotesOnMusicSheet } from "./ledgerLineTranspositionCount";
 import { RangeSelectionElementCollector } from "./RangeSelectionElementCollector";
@@ -154,6 +155,9 @@ export class OpenSheetMusicDisplay {
     protected drawingParameters: DrawingParameters;
     protected rules: EngravingRules;
     private staffOpacityOverrides: Map<number, number> = new Map();
+    private readAheadStaffEntryIndexGeneration: number = 0;
+    private readonly readAheadStaffEntriesByMeasure: Map<number, GraphicalStaffEntry[]> = new Map();
+    private readonly readAheadUnsortedMeasures: Set<number> = new Set();
     protected autoResizeEnabled: boolean;
     protected resizeHandlerAttached: boolean;
     protected followCursor: boolean;
@@ -1836,6 +1840,7 @@ export class OpenSheetMusicDisplay {
         this.zoom = 1.0;
         this.rules.RenderCount = 0;
         this.staffOpacityOverrides.clear();
+        this.invalidateReadAheadStaffEntryIndex();
         this.rangeSelectionElementCollector.invalidate();
         this.clearRangeSelection(false);
         this.hoverAnchor = undefined;
@@ -2367,6 +2372,10 @@ export class OpenSheetMusicDisplay {
     public get GraphicSheet(): GraphicalMusicSheet {
         return this.graphic;
     }
+    /** Changes whenever the graphical score is rebuilt; 0 before a score is loaded. */
+    public get LayoutGeneration(): number {
+        return this.graphic?.LayoutGeneration ?? 0;
+    }
     public get DrawingParameters(): DrawingParameters {
         return this.drawingParameters;
     }
@@ -2732,32 +2741,27 @@ export class OpenSheetMusicDisplay {
         const windowEnd: number = hiddenBeats > 0 ? (fromBeatInMeasure + hiddenBeats) * quarterNoteFraction : Number.POSITIVE_INFINITY;
         const epsilon: number = 1e-6;
 
-        for (const verticalContainer of this.graphic.VerticalGraphicalStaffEntryContainers) {
-            for (const staffEntry of verticalContainer?.StaffEntries ?? []) {
-                if (staffEntry?.parentMeasure?.parentSourceMeasure?.measureListIndex !== measureListIndex) {
-                    continue;
-                }
-                const inMeasureTime: number = staffEntry.relInMeasureTimestamp?.RealValue ?? 0;
-                // hiddenBeats <= 0: whole measure hidden. Otherwise hide only [windowStart, windowEnd).
-                const inWindow: boolean =
-                    hiddenBeats <= 0 ||
-                    (inMeasureTime >= windowStart - epsilon && inMeasureTime < windowEnd - epsilon);
-                const targetOpacity: number = inWindow ? opacity : 1.0;
-                for (const graphicalVoiceEntry of staffEntry.graphicalVoiceEntries ?? []) {
-                    for (const graphicalNote of graphicalVoiceEntry?.notes ?? []) {
-                        if (graphicalNote) {
-                            graphicalNote.setOpacity(targetOpacity);
-                            if (inWindow) {
-                                this.readAheadOpacityTouchedGraphicalNotes.add(graphicalNote);
-                            } else {
-                                this.readAheadOpacityTouchedGraphicalNotes.delete(graphicalNote);
-                            }
+        for (const staffEntry of this.getReadAheadStaffEntriesForMeasure(measureListIndex)) {
+            const inMeasureTime: number = staffEntry.relInMeasureTimestamp?.RealValue ?? 0;
+            // hiddenBeats <= 0: whole measure hidden. Otherwise hide only [windowStart, windowEnd).
+            const inWindow: boolean =
+                hiddenBeats <= 0 ||
+                (inMeasureTime >= windowStart - epsilon && inMeasureTime < windowEnd - epsilon);
+            const targetOpacity: number = inWindow ? opacity : 1.0;
+            for (const graphicalVoiceEntry of staffEntry.graphicalVoiceEntries ?? []) {
+                for (const graphicalNote of graphicalVoiceEntry?.notes ?? []) {
+                    if (graphicalNote) {
+                        graphicalNote.setOpacity(targetOpacity);
+                        if (inWindow) {
+                            this.readAheadOpacityTouchedGraphicalNotes.add(graphicalNote);
+                        } else {
+                            this.readAheadOpacityTouchedGraphicalNotes.delete(graphicalNote);
                         }
                     }
                 }
-                for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
-                    this.setReadAheadGraphicalLabelOpacity(fingeringEntry, targetOpacity);
-                }
+            }
+            for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
+                this.setReadAheadGraphicalLabelOpacity(fingeringEntry, targetOpacity);
             }
         }
     }
@@ -2785,26 +2789,28 @@ export class OpenSheetMusicDisplay {
         const windowEnd: number = Math.max(0, fromBeatInMeasure + beatCount) * quarterNoteFraction;
         const epsilon: number = 1e-6;
 
-        for (const verticalContainer of this.graphic.VerticalGraphicalStaffEntryContainers) {
-            for (const staffEntry of verticalContainer?.StaffEntries ?? []) {
-                if (staffEntry?.parentMeasure?.parentSourceMeasure?.measureListIndex !== measureListIndex) {
-                    continue;
-                }
-                const inMeasureTime: number = staffEntry.relInMeasureTimestamp?.RealValue ?? 0;
-                if (inMeasureTime < windowStart - epsilon || inMeasureTime >= windowEnd - epsilon) {
-                    continue;
-                }
-                for (const graphicalVoiceEntry of staffEntry.graphicalVoiceEntries ?? []) {
-                    for (const graphicalNote of graphicalVoiceEntry?.notes ?? []) {
-                        if (graphicalNote) {
-                            graphicalNote.setOpacity(opacity);
-                            this.readAheadOpacityTouchedGraphicalNotes.add(graphicalNote);
-                        }
+        const staffEntries: GraphicalStaffEntry[] = this.getReadAheadStaffEntriesForMeasure(measureListIndex);
+        const sorted: boolean = !this.readAheadUnsortedMeasures.has(measureListIndex);
+        const firstIndex: number = sorted ? this.firstReadAheadStaffEntryAtOrAfter(staffEntries, windowStart - epsilon) : 0;
+        for (let index: number = firstIndex; index < staffEntries.length; index++) {
+            const staffEntry: GraphicalStaffEntry = staffEntries[index];
+            const inMeasureTime: number = staffEntry.relInMeasureTimestamp?.RealValue ?? 0;
+            if (sorted && inMeasureTime >= windowEnd - epsilon) {
+                break;
+            }
+            if (inMeasureTime < windowStart - epsilon || inMeasureTime >= windowEnd - epsilon) {
+                continue;
+            }
+            for (const graphicalVoiceEntry of staffEntry.graphicalVoiceEntries ?? []) {
+                for (const graphicalNote of graphicalVoiceEntry?.notes ?? []) {
+                    if (graphicalNote) {
+                        graphicalNote.setOpacity(opacity);
+                        this.readAheadOpacityTouchedGraphicalNotes.add(graphicalNote);
                     }
                 }
-                for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
-                    this.setReadAheadGraphicalLabelOpacity(fingeringEntry, opacity);
-                }
+            }
+            for (const fingeringEntry of staffEntry.FingeringEntries ?? []) {
+                this.setReadAheadGraphicalLabelOpacity(fingeringEntry, opacity);
             }
         }
     }
@@ -2824,6 +2830,54 @@ export class OpenSheetMusicDisplay {
         }
         this.readAheadOpacityTouchedGraphicalNotes.clear();
         this.readAheadOpacityTouchedElements.clear();
+    }
+
+    private invalidateReadAheadStaffEntryIndex(): void {
+        this.readAheadStaffEntryIndexGeneration = 0;
+        this.readAheadStaffEntriesByMeasure.clear();
+        this.readAheadUnsortedMeasures.clear();
+    }
+
+    private getReadAheadStaffEntriesForMeasure(measureListIndex: number): GraphicalStaffEntry[] {
+        const containers: VerticalGraphicalStaffEntryContainer[] = this.graphic?.VerticalGraphicalStaffEntryContainers;
+        if (!containers) {
+            return [];
+        }
+        if (this.readAheadStaffEntryIndexGeneration !== this.graphic.LayoutGeneration) {
+            this.invalidateReadAheadStaffEntryIndex();
+            for (const container of containers) {
+                for (const staffEntry of container?.StaffEntries ?? []) {
+                    const index: number = staffEntry?.parentMeasure?.parentSourceMeasure?.measureListIndex;
+                    if (index === undefined) {
+                        continue;
+                    }
+                    const entries: GraphicalStaffEntry[] = this.readAheadStaffEntriesByMeasure.get(index) ?? [];
+                    const previous: GraphicalStaffEntry = entries[entries.length - 1];
+                    if (previous &&
+                        !((previous.relInMeasureTimestamp?.RealValue ?? 0) <= (staffEntry.relInMeasureTimestamp?.RealValue ?? 0))) {
+                        this.readAheadUnsortedMeasures.add(index);
+                    }
+                    entries.push(staffEntry);
+                    this.readAheadStaffEntriesByMeasure.set(index, entries);
+                }
+            }
+            this.readAheadStaffEntryIndexGeneration = this.graphic.LayoutGeneration;
+        }
+        return this.readAheadStaffEntriesByMeasure.get(measureListIndex) ?? [];
+    }
+
+    private firstReadAheadStaffEntryAtOrAfter(staffEntries: GraphicalStaffEntry[], inMeasureTime: number): number {
+        let low: number = 0;
+        let high: number = staffEntries.length;
+        while (low < high) {
+            const mid: number = Math.floor((low + high) / 2);
+            if ((staffEntries[mid].relInMeasureTimestamp?.RealValue ?? 0) < inMeasureTime) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        return low;
     }
 
     private setReadAheadGraphicalLabelOpacity(label: GraphicalLabel, opacity: number): void {
