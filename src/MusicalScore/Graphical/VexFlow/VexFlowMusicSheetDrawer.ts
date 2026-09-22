@@ -121,6 +121,9 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
         }
         try {
             super.drawMusicSystem(system);
+            if (group) {
+                VexFlowGraphicalNote.invalidateSVGLookup(group);
+            }
             for (const staffLine of system.StaffLines) {
                 for (const measure of staffLine.Measures) {
                     for (const staffEntry of measure?.staffEntries ?? []) {

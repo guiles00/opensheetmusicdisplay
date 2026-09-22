@@ -308,8 +308,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     /** Gets the SVG path elements of the note's tie curves. */
     public getTieSVGs(): HTMLElement[] {
         const tieSVGs: HTMLElement[] = [];
-        const ties: NodeListOf<HTMLElement> = this.getSVGLookupRoot()
-            .querySelectorAll<HTMLElement>(`[id='vf-${this.getSVGId()}-tie']`);
+        const ties: HTMLElement[] = this.getSVGElementsById(`vf-${this.getSVGId()}-tie`);
         // TODO multiple ties have the same id sometimes, DOM elements are not supposed to have the same id, this is invalid HTML. But it works.
         for (const tie of ties) {
             tieSVGs.push(tie);
@@ -320,8 +319,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     /** Gets the SVG path elements of the note's slur curve. */
     public getSlurSVGs(): HTMLElement[] {
         const slurSVGs: HTMLElement[] = [];
-        const slurs: NodeListOf<HTMLElement> = this.getSVGLookupRoot()
-            .querySelectorAll<HTMLElement>(`[id='vf-${this.getSVGId()}-slur']`);
+        const slurs: HTMLElement[] = this.getSVGElementsById(`vf-${this.getSVGId()}-slur`);
         // TODO multiple slurs have the same id sometimes, DOM elements are not supposed to have the same id, this is invalid HTML. But it works.
         for (const slur of slurs) {
             slurSVGs.push(slur);
@@ -329,13 +327,46 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return slurSVGs;
     }
 
-    /** The nearest system remains queryable while virtualization has detached it from document. */
-    private getSVGLookupRoot(): ParentNode {
-        return this.getSVGGElement()?.closest(".osmd-system") ?? document;
+    /** Drops the id index of a system whose subtree changed, e.g. once the drawer finishes drawing it. */
+    public static invalidateSVGLookup(systemRoot: Element): void {
+        VexFlowGraphicalNote.systemIdIndexes.delete(systemRoot);
+    }
+
+    private static readonly systemIdIndexes: WeakMap<Element, Map<string, HTMLElement[]>> =
+        new WeakMap<Element, Map<string, HTMLElement[]>>();
+
+    private static getSystemIdIndex(systemRoot: Element): Map<string, HTMLElement[]> {
+        let index: Map<string, HTMLElement[]> = VexFlowGraphicalNote.systemIdIndexes.get(systemRoot);
+        if (!index) {
+            index = new Map<string, HTMLElement[]>();
+            for (const element of Array.from(systemRoot.querySelectorAll<HTMLElement>("[id]"))) {
+                const elements: HTMLElement[] = index.get(element.id);
+                if (elements) {
+                    elements.push(element);
+                } else {
+                    index.set(element.id, [element]);
+                }
+            }
+            VexFlowGraphicalNote.systemIdIndexes.set(systemRoot, index);
+        }
+        return index;
+    }
+
+    /** Resolves ids within the note's own system, which stays queryable while virtualization detaches it. */
+    private getSVGElementsById(id: string): HTMLElement[] {
+        const noteElement: SVGGElement = this.getSVGGElement();
+        if (!noteElement) {
+            return [];
+        }
+        const systemRoot: Element = noteElement.closest(".osmd-system");
+        if (!systemRoot) {
+            return Array.from(document.querySelectorAll<HTMLElement>(`[id='${id}']`));
+        }
+        return VexFlowGraphicalNote.getSystemIdIndex(systemRoot).get(id) ?? [];
     }
 
     private getSVGElementById(id: string): HTMLElement {
-        return this.getSVGLookupRoot().querySelector<HTMLElement>(`[id='${id}']`);
+        return this.getSVGElementsById(id)[0];
     }
 
     public getNoteheadSVGs(): HTMLElement[] {
@@ -658,7 +689,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         if (this.retainedColor) {
             this.setColor(this.retainedColor.color, this.retainedColor.options);
         }
-        if (this.opacity !== undefined) {
+        if (this.opacity !== undefined && this.opacity !== 1) {
             this.setOpacity(this.opacity);
         }
         if (this.hoverHandler) {
