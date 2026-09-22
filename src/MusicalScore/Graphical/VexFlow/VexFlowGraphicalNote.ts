@@ -16,6 +16,9 @@ import { VexFlowMultiRestMeasure } from "./VexFlowMultiRestMeasure";
  * The VexFlow version of a [[GraphicalNote]].
  */
 export class VexFlowGraphicalNote extends GraphicalNote {
+    public static readonly GraceNoteClass: string = "pt-gracenote";
+    public static readonly OrnamentClass: string = "pt-ornament";
+
     constructor(note: Note, parent: GraphicalVoiceEntry, activeClef: ClefInstruction,
                 octaveShift: OctaveEnum = OctaveEnum.NONE, rules: EngravingRules,
                 graphicalNoteLength: Fraction = undefined) {
@@ -612,8 +615,43 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
     }
 
+    /** Classes grace notes and ornaments as the note's system is drawn, so styling never needs a score-wide scan. */
+    public applySemanticSVGClasses(): void {
+        const graphicalElement: SVGGElement = this.getSVGGElement();
+        if (!graphicalElement) {
+            return;
+        }
+        if (this.isGraceNote()) {
+            const graceGroup: Element = graphicalElement.parentElement;
+            const svgId: string = this.getSVGId();
+            const parts: Element[] = [
+                graceGroup?.classList.contains("vf-gracenotegroup") ? graceGroup : graphicalElement,
+                this.getSVGElementById(`vf-${svgId}ledgers`),
+                this.getSVGElementById(`vf-${svgId}-stem`),
+                ...this.getBeamSVGs()
+            ];
+            const classSelector: string = `.${VexFlowGraphicalNote.GraceNoteClass}`;
+            for (const part of parts) {
+                if (part?.childElementCount > 0 && !part.parentElement?.closest(classSelector)) {
+                    part.classList.add(VexFlowGraphicalNote.GraceNoteClass);
+                }
+            }
+            return;
+        }
+        if (this.hasOrnaments()) {
+            for (const modifierGroup of this.getModifierSVGs()) {
+                for (const child of Array.from(modifierGroup.children)) {
+                    if (child.classList.contains("vf-ornament")) {
+                        child.classList.add(VexFlowGraphicalNote.OrnamentClass);
+                    }
+                }
+            }
+        }
+    }
+
     /** Reapply application-owned SVG state when a lazily materialized system is drawn for the first time. */
     public applyRetainedSVGState(): void {
+        this.applySemanticSVGClasses();
         if (this.retainedVisibility) {
             this.setVisible(this.retainedVisibility.visible, this.retainedVisibility.options);
         }

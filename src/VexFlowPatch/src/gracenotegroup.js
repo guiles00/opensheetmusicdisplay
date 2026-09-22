@@ -163,6 +163,8 @@ export class GraceNoteGroup extends Modifier {
     this.setRendered();
     this.alignSubNotesWithNote(this.getGraceNotes(), note); // Modifier function
 
+    this.context.openGroup('gracenotegroup');
+
     // Draw notes
     this.grace_notes.forEach(graceNote => {
       graceNote.setContext(this.context).draw();
@@ -189,5 +191,7 @@ export class GraceNoteGroup extends Modifier {
       this.slur.render_options.y_shift = (is_stavenote ? 7 : 5) + this.render_options.slur_y_shift;
       this.slur.setContext(this.context).draw();
     }
+
+    this.context.closeGroup();
   }
 }
