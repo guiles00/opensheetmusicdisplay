@@ -47,6 +47,8 @@ export class SystemVirtualizationController {
     private target: HTMLElement | Window | undefined;
     private overscanViewports: number = 1;
     private frameRequest: number | undefined;
+    private materializeFrameRequest: number | undefined;
+    private readonly pendingMaterializationKeys: Set<string> = new Set<string>();
     private materializeSystems: ((keys: string[]) => void) | undefined;
 
     public constructor(container: HTMLElement) {
@@ -95,6 +97,11 @@ export class SystemVirtualizationController {
             window.cancelAnimationFrame(this.frameRequest);
         }
         this.frameRequest = undefined;
+        if (this.materializeFrameRequest !== undefined && typeof window !== "undefined") {
+            window.cancelAnimationFrame(this.materializeFrameRequest);
+        }
+        this.materializeFrameRequest = undefined;
+        this.pendingMaterializationKeys.clear();
         this.systems.clear();
         this.expectedSystems.clear();
         this.materializeSystems = undefined;
@@ -147,31 +154,53 @@ export class SystemVirtualizationController {
         const minY: number = viewport.top - viewport.height * this.overscanViewports;
         const maxY: number = viewport.bottom + viewport.height * this.overscanViewports;
         const missingVisibleKeys: string[] = [];
+        const missingOverscanKeys: string[] = [];
+        const matrices: Map<SVGSVGElement, DOMMatrix> = new Map<SVGSVGElement, DOMMatrix>();
+        const getMatrix: (svg: SVGSVGElement) => DOMMatrix = (svg: SVGSVGElement): DOMMatrix => {
+            if (matrices.has(svg)) {
+                return matrices.get(svg)!;
+            }
+            const matrix: DOMMatrix = svg.getScreenCTM();
+            matrices.set(svg, matrix);
+            return matrix;
+        };
         for (const expected of this.expectedSystems.values()) {
             if (this.systems.has(expected.key)) {
                 continue;
             }
-            const matrix: DOMMatrix = expected.svg.getScreenCTM();
+            const matrix: DOMMatrix = getMatrix(expected.svg);
             if (!matrix) {
                 continue;
             }
             const top: number = new DOMPoint(0, expected.top).matrixTransform(matrix).y;
             const bottom: number = new DOMPoint(0, expected.bottom).matrixTransform(matrix).y;
-            if (bottom >= minY && top <= maxY) {
+            if (bottom >= viewport.top && top <= viewport.bottom) {
                 missingVisibleKeys.push(expected.key);
+            } else if (bottom >= minY && top <= maxY) {
+                missingOverscanKeys.push(expected.key);
             }
         }
+        // Systems intersecting the real viewport are urgent: draw them now so cursor jumps and fast
+        // scrolling never expose a blank line. Overscan is speculative and is deliberately spread over
+        // future frames below, preventing a large viewport window from becoming one long task.
         if (missingVisibleKeys.length > 0 && this.materializeSystems) {
             this.materializeSystems(missingVisibleKeys);
             this.discoverRenderedSystems();
         }
+        this.pendingMaterializationKeys.clear();
+        for (const key of missingOverscanKeys) {
+            if (!this.systems.has(key)) {
+                this.pendingMaterializationKeys.add(key);
+            }
+        }
+        this.scheduleNextMaterialization();
         // Read every system's position before mutating any of them: getScreenCTM() forces a synchronous
         // layout flush, so interleaving reads with attach()/detach() writes would thrash layout once per
         // system instead of once total.
         const toAttach: VirtualizedSystem[] = [];
         const toDetach: VirtualizedSystem[] = [];
         for (const system of this.systems.values()) {
-            const matrix: DOMMatrix = system.svg.getScreenCTM();
+            const matrix: DOMMatrix = getMatrix(system.svg);
             if (!matrix) {
                 // Position not measurable right now (e.g. mid-backend-swap) - leave this system's DOM
                 // state as-is rather than guessing attached. The next refresh() (scroll/resize, or the
@@ -220,6 +249,30 @@ export class SystemVirtualizationController {
         });
     };
 
+    private scheduleNextMaterialization(): void {
+        if (!this.enabled || !this.materializeSystems || this.pendingMaterializationKeys.size === 0 ||
+            this.materializeFrameRequest !== undefined) {
+            return;
+        }
+        this.materializeFrameRequest = window.requestAnimationFrame((): void => {
+            this.materializeFrameRequest = undefined;
+            if (!this.enabled || !this.materializeSystems) {
+                return;
+            }
+            const iterator: Iterator<string> = this.pendingMaterializationKeys.values();
+            const next: IteratorResult<string> = iterator.next();
+            if (next.done) {
+                return;
+            }
+            this.pendingMaterializationKeys.delete(next.value);
+            if (!this.systems.has(next.value)) {
+                this.materializeSystems([next.value]);
+                this.discoverRenderedSystems();
+            }
+            this.scheduleNextMaterialization();
+        });
+    }
+
     private getViewport(): VirtualizationViewport {
         if (!this.target || this.target === window) {
             return { top: 0, bottom: window.innerHeight, height: window.innerHeight };
@@ -254,5 +307,10 @@ export class SystemVirtualizationController {
             window.cancelAnimationFrame(this.frameRequest);
             this.frameRequest = undefined;
         }
+        if (this.materializeFrameRequest !== undefined) {
+            window.cancelAnimationFrame(this.materializeFrameRequest);
+            this.materializeFrameRequest = undefined;
+        }
+        this.pendingMaterializationKeys.clear();
     }
 }
