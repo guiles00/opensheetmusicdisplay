@@ -123,11 +123,13 @@ export abstract class MusicSheetCalculator {
         }
     }
 
-    public initialize(graphicalMusicSheet: GraphicalMusicSheet): void {
+    public initialize(graphicalMusicSheet: GraphicalMusicSheet, prepare: boolean = true): void {
         this.graphicalMusicSheet = graphicalMusicSheet;
         this.rules = graphicalMusicSheet.ParentMusicSheet.Rules;
         this.rules.clearMusicSheetObjects();
-        this.prepareGraphicalMusicSheet();
+        if (prepare) {
+            this.prepareGraphicalMusicSheet();
+        }
         //this.calculate();
     }
 

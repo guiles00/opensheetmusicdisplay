@@ -38,11 +38,12 @@ export class GraphicalMusicSheet {
     private static nextLayoutGeneration: number = 1;
     private layoutGeneration: number = GraphicalMusicSheet.nextLayoutGeneration++;
 
-    constructor(musicSheet: MusicSheet, calculator: MusicSheetCalculator) {
+    /** @param prepare false leaves graphical measures uncreated until prepareGraphicalMusicSheet() runs. */
+    constructor(musicSheet: MusicSheet, calculator: MusicSheetCalculator, prepare: boolean = true) {
         this.musicSheet = musicSheet;
         this.numberOfStaves = this.musicSheet.Staves.length;
         this.calculator = calculator;
-        this.calculator.initialize(this);
+        this.calculator.initialize(this, prepare);
     }
 
     private musicSheet: MusicSheet;

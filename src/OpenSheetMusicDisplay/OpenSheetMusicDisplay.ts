@@ -87,6 +87,7 @@ interface OutsideMaskSegment {
 export class OpenSheetMusicDisplay {
     protected version: string = "2.1.2-dev"; // getter: this.Version
     // at release, bump version and change to -release, afterwards to -dev again
+    private graphicNeedsPreparation: boolean = false;
     private lastMinMeasureToDrawIndex: number = 0;
     private lastMaxMeasureToDrawIndex: number = Number.MAX_SAFE_INTEGER;
     /** Native MusicXML fingerings temporarily replaced by setFingeringValues(). */
@@ -352,7 +353,8 @@ export class OpenSheetMusicDisplay {
      */
     public updateGraphic(): void {
         const calc: MusicSheetCalculator = new VexFlowMusicSheetCalculator(this.rules);
-        this.graphic = new GraphicalMusicSheet(this.sheet, calc);
+        this.graphic = new GraphicalMusicSheet(this.sheet, calc, false);
+        this.graphicNeedsPreparation = true;
         if (this.drawingParameters.drawCursors) {
             this.cursors.forEach(cursor => {
                 cursor.init(this.sheet.MusicPartManager, this.graphic);
@@ -453,11 +455,9 @@ export class OpenSheetMusicDisplay {
         // Rebuild measures when drawing range changed so state like 8va spans is seeded correctly
         const currentMinIndex: number = this.rules.MinMeasureToDrawIndex;
         const currentMaxIndex: number = this.rules.MaxMeasureToDrawIndex;
-        if (this.lastMinMeasureToDrawIndex !== currentMinIndex || this.lastMaxMeasureToDrawIndex !== currentMaxIndex) {
-            this.graphic.Initialize();
-            this.graphic.GetCalculator.prepareGraphicalMusicSheet();
-            this.lastMinMeasureToDrawIndex = currentMinIndex;
-            this.lastMaxMeasureToDrawIndex = currentMaxIndex;
+        if (this.graphicNeedsPreparation ||
+            this.lastMinMeasureToDrawIndex !== currentMinIndex || this.lastMaxMeasureToDrawIndex !== currentMaxIndex) {
+            this.prepareGraphic();
         }
 
         // Calculate again
@@ -629,6 +629,7 @@ export class OpenSheetMusicDisplay {
         if (!this.graphic) {
             throw new Error("OSMD: load() needs to be called before renderNext()");
         }
+        this.ensureGraphicPrepared();
         const batchMeasures: number = Math.max(1, options?.measures ?? 8);
         // `systems` (vertical only) advances the frontier by whole music systems instead of measures. A single
         // horizontal staffline is one system, so it ignores `systems` and uses `measures`.
@@ -1854,6 +1855,7 @@ export class OpenSheetMusicDisplay {
         }
         this.sheet = undefined;
         this.graphic = undefined;
+        this.graphicNeedsPreparation = false;
         this.zoom = 1.0;
         this.rules.RenderCount = 0;
         this.staffOpacityOverrides.clear();
@@ -2387,7 +2389,26 @@ export class OpenSheetMusicDisplay {
         return this.drawer;
     }
     public get GraphicSheet(): GraphicalMusicSheet {
+        this.ensureGraphicPrepared();
         return this.graphic;
+    }
+
+    /**
+     * Graphical measures are created on first use rather than in load(): the application may still change
+     * instrument visibility, drawing range or rules before rendering, and preparation depends on them.
+     */
+    private ensureGraphicPrepared(): void {
+        if (this.graphicNeedsPreparation && this.graphic) {
+            this.prepareGraphic();
+        }
+    }
+
+    private prepareGraphic(): void {
+        this.graphic.Initialize();
+        this.graphic.GetCalculator.prepareGraphicalMusicSheet();
+        this.graphicNeedsPreparation = false;
+        this.lastMinMeasureToDrawIndex = this.rules.MinMeasureToDrawIndex;
+        this.lastMaxMeasureToDrawIndex = this.rules.MaxMeasureToDrawIndex;
     }
     /** Changes whenever the graphical score is rebuilt; 0 before a score is loaded. */
     public get LayoutGeneration(): number {
