@@ -145,6 +145,7 @@ export abstract class MusicSheetCalculator {
         this.staffEntriesWithOrnaments = [];
         this.staffEntriesWithChordSymbols = [];
         this.staffLinesWithLyricWords = [];
+        this.graphicalLyricWords = [];
         // this.staffLinesWithGraphicalExpressions = [];
 
         this.graphicalMusicSheet.Initialize();

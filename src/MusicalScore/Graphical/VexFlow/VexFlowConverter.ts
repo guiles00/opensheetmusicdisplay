@@ -866,9 +866,12 @@ export class VexFlowConverter {
                     //   so that it doesn't overlap notes (gets displayed right below higher note)
                     //   TODO this could maybe be moved elsewhere or done more elegantly,
                     //     but on the other hand here it only gets checked if we have an inverted fermata anyways, seems efficient.
-                    if (pve !== sourceNote.ParentVoiceEntry.ParentSourceStaffEntry.VoiceEntries.last()) {
-                        pve.Articulations = pve.Articulations.slice(pve.Articulations.indexOf(articulation));
-                        pve.ParentSourceStaffEntry.VoiceEntries.last().Articulations.push(articulation);
+                    const lastVoiceEntry: VoiceEntry = sourceNote.ParentVoiceEntry.ParentSourceStaffEntry.VoiceEntries.last();
+                    if (pve !== lastVoiceEntry) {
+                        pve.Articulations = pve.Articulations.filter(other => other !== articulation);
+                        if (!lastVoiceEntry.Articulations.includes(articulation)) {
+                            lastVoiceEntry.Articulations.push(articulation);
+                        }
                         continue;
                     }
                     vfArt = new VF.Articulation("a@u");
