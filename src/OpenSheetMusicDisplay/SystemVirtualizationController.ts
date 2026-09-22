@@ -62,6 +62,9 @@ interface SvgSystemIndex {
 
 type MaterializeSystems = (keys: string[]) => SVGGElement[] | void;
 
+/** Upper bound on skipped frames, so one pathological system can never stall the queue for long. */
+const MAX_MATERIALIZATION_COOLDOWN_FRAMES: number = 12;
+
 interface VirtualizationViewport {
     top: number;
     bottom: number;
@@ -89,6 +92,7 @@ export class SystemVirtualizationController {
     private scrollDirection: number = 0;
     private lastMaterializationMs: number = 0;
     private averageMaterializationMs: number = 0;
+    private materializationCooldownFrames: number = 0;
     private materializeSystems: MaterializeSystems | undefined;
     private systemIndex: Map<SVGSVGElement, SvgSystemIndex> | undefined;
     private readonly attachedKeys: Set<string> = new Set<string>();
@@ -108,6 +112,7 @@ export class SystemVirtualizationController {
         this.overscanViewports = Math.max(0, options?.overscanViewports ?? 1);
         this.activeBudgetMs = Math.max(0, options?.activeMaterializationBudgetMs ?? 4);
         this.idleBudgetMs = Math.max(0, options?.idleMaterializationBudgetMs ?? 10);
+        this.materializationCooldownFrames = 0;
         this.target.addEventListener("scroll", this.onScroll, { passive: true });
         window.addEventListener("resize", this.scheduleUpdate, { passive: true });
         this.refresh();
@@ -174,6 +179,7 @@ export class SystemVirtualizationController {
         }
         this.materializeFrameRequest = undefined;
         this.pendingMaterializationKeys = [];
+        this.materializationCooldownFrames = 0;
         this.lastContentOffset = undefined;
         this.scrollDirection = 0;
         this.systems.clear();
@@ -419,8 +425,11 @@ export class SystemVirtualizationController {
 
     /**
      * Draws queued offscreen systems nearest-first within a per-frame time budget: smaller right after
-     * scrolling so input stays smooth, larger when idle so the overscan fills quickly. At least one system
-     * is drawn per frame. Browsers pause animation frames in background tabs, which pauses this too.
+     * scrolling so input stays smooth, larger when idle so the overscan fills quickly. A system is always
+     * drawn whole, so on a slow device one draw can cost several times the budget; the frames it overran
+     * are then skipped, which keeps the average cost per frame at the budget instead of making every
+     * frame late while the queue drains. Browsers pause animation frames in background tabs, which pauses
+     * this too.
      */
     private scheduleNextMaterialization(): void {
         if (!this.enabled || !this.materializeSystems || this.pendingMaterializationKeys.length === 0 ||
@@ -430,6 +439,11 @@ export class SystemVirtualizationController {
         this.materializeFrameRequest = window.requestAnimationFrame((): void => {
             this.materializeFrameRequest = undefined;
             if (!this.enabled || !this.materializeSystems) {
+                return;
+            }
+            if (this.materializationCooldownFrames > 0) {
+                this.materializationCooldownFrames--;
+                this.scheduleNextMaterialization();
                 return;
             }
             const startedAt: number = performance.now();
@@ -446,6 +460,10 @@ export class SystemVirtualizationController {
                     drawn++;
                 }
             }
+            const spentMs: number = performance.now() - startedAt;
+            this.materializationCooldownFrames = budgetMs > 0
+                ? Math.min(MAX_MATERIALIZATION_COOLDOWN_FRAMES, Math.max(0, Math.ceil(spentMs / budgetMs) - 1))
+                : 0;
             this.scheduleNextMaterialization();
         });
     }
