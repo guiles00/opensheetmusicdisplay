@@ -44,6 +44,8 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     private retainedColor: { color: string, options: ColoringOptions } | undefined;
     private retainedVisibility: { visible: boolean, options: VisibilityOptions } | undefined;
     private readonly svgMaterializationHandlers: (() => void)[] = [];
+    private readonly svgRecreationHandlers: (() => void)[] = [];
+    private readonly svgEvictionHandlers: (() => void)[] = [];
 
     /**
      * Update the pitch of this note. Necessary in order to display accidentals correctly.
@@ -266,6 +268,23 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             return;
         }
         this.svgMaterializationHandlers.push(handler);
+    }
+
+    public addSVGRecreationHandler(handler: () => void): void {
+        this.svgRecreationHandlers.push(handler);
+    }
+
+    public addSVGEvictionHandler(handler: () => void): void {
+        this.svgEvictionHandlers.push(handler);
+    }
+
+    public releaseRenderedSVG(): void {
+        for (const handler of this.svgEvictionHandlers) {
+            handler();
+        }
+        const vfNote: { setAttribute: (name: string, value: unknown) => void } =
+            this.vfnote?.[0] as unknown as { setAttribute: (name: string, value: unknown) => void };
+        vfNote?.setAttribute("el", undefined);
     }
 
     /** Gets the SVG path element of the note's stem. */
@@ -745,6 +764,9 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
         if (this.clickHandler) {
             this.setClickHandler(this.clickHandler);
+        }
+        for (const handler of [...this.svgRecreationHandlers]) {
+            handler();
         }
         const handlers: (() => void)[] = this.svgMaterializationHandlers.splice(0);
         for (const handler of handlers) {
