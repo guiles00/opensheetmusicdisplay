@@ -206,7 +206,7 @@ export class OpenSheetMusicDisplay {
     private readonly rangeOpacityTouchedElements: Set<Element> = new Set<Element>();
     /** Notes whose opacity was lowered by read-ahead (kept separate from range selection so they never clash). */
     private readonly readAheadOpacityTouchedGraphicalNotes: Set<GraphicalNote> = new Set<GraphicalNote>();
-    private readonly readAheadOpacityTouchedElements: Set<Element> = new Set<Element>();
+    private readonly readAheadOpacityTouchedLabels: Set<GraphicalLabel> = new Set<GraphicalLabel>();
     private readonly rangeSelectionElementCollector: RangeSelectionElementCollector = new RangeSelectionElementCollector();
     private needsCommittedRangeAnchorRefresh: boolean = false;
     private hoverAnchor: RangeSelectionAnchor;
@@ -584,7 +584,53 @@ export class OpenSheetMusicDisplay {
                 this.cursors.forEach(cursor => cursor.update());
             }
             return this.drawer.SystemGroups.slice(firstNewGroup);
+        }, (key: string, root: SVGGElement): void => {
+            this.releaseVirtualizedSystem(key, root);
         });
+    }
+
+    private releaseVirtualizedSystem(key: string, root: SVGGElement): void {
+        const [pageNumberString, systemIndexString] = key.split(":");
+        const pageIndex: number = Number.parseInt(pageNumberString, 10) - 1;
+        const systemIndex: number = Number.parseInt(systemIndexString, 10);
+        const system: MusicSystem = this.graphic?.MusicPages[pageIndex]?.MusicSystems[systemIndex];
+        if (system) {
+            for (const staffLine of system.StaffLines) {
+                for (const measure of staffLine.Measures) {
+                    for (const staffEntry of measure?.staffEntries ?? []) {
+                        for (const voiceEntry of staffEntry.graphicalVoiceEntries ?? []) {
+                            for (const note of voiceEntry.notes ?? []) {
+                                note.releaseRenderedSVG();
+                            }
+                        }
+                        for (const label of staffEntry.FingeringEntries ?? []) {
+                            if (label.SVGNode && root.contains(label.SVGNode)) {
+                                label.SVGNode = undefined;
+                            }
+                        }
+                        for (const lyric of staffEntry.LyricsEntries ?? []) {
+                            const label: GraphicalLabel = lyric.GraphicalLabel;
+                            if (label?.SVGNode && root.contains(label.SVGNode)) {
+                                label.SVGNode = undefined;
+                            }
+                        }
+                        for (const chord of staffEntry.graphicalChordContainers ?? []) {
+                            const label: GraphicalLabel = chord.GraphicalLabel;
+                            if (label?.SVGNode && root.contains(label.SVGNode)) {
+                                label.SVGNode = undefined;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        this.drawer.forgetSystemGroup(root);
+        this.rangeSelectionElementCollector.invalidate();
+        for (const label of this.readAheadOpacityTouchedLabels) {
+            if (label.SVGNode && root.contains(label.SVGNode)) {
+                label.SVGNode = undefined;
+            }
+        }
     }
 
     /** Internal range-based engine behind {@link renderNext} (the public incremental API). Lays out the
@@ -2855,19 +2901,20 @@ export class OpenSheetMusicDisplay {
 
     /** Restores the opacity of every note hidden by {@link setReadAheadMeasureOpacity}. */
     public resetReadAheadOpacity(): void {
-        if (this.readAheadOpacityTouchedGraphicalNotes.size === 0 && this.readAheadOpacityTouchedElements.size === 0) {
+        if (this.readAheadOpacityTouchedGraphicalNotes.size === 0 && this.readAheadOpacityTouchedLabels.size === 0) {
             return;
         }
         for (const graphicalNote of this.readAheadOpacityTouchedGraphicalNotes) {
             graphicalNote.setOpacity(1.0);
         }
-        for (const element of this.readAheadOpacityTouchedElements) {
-            if (element?.isConnected) {
-                element.setAttribute("opacity", "1");
+        for (const label of this.readAheadOpacityTouchedLabels) {
+            label.readAheadOpacity = 1;
+            if (label.SVGNode instanceof Element && label.SVGNode.isConnected) {
+                label.SVGNode.setAttribute("opacity", "1");
             }
         }
         this.readAheadOpacityTouchedGraphicalNotes.clear();
-        this.readAheadOpacityTouchedElements.clear();
+        this.readAheadOpacityTouchedLabels.clear();
     }
 
     private invalidateReadAheadStaffEntryIndex(): void {
@@ -2919,22 +2966,17 @@ export class OpenSheetMusicDisplay {
     }
 
     private setReadAheadGraphicalLabelOpacity(label: GraphicalLabel, opacity: number): void {
-        if (!label?.SVGNode) {
+        if (!label) {
             return;
         }
-        const labelNode: Element = label.SVGNode as Element;
-        this.setReadAheadElementOpacity(labelNode, opacity);
-    }
-
-    private setReadAheadElementOpacity(element: Element, opacity: number): void {
-        if (!element) {
-            return;
+        label.readAheadOpacity = opacity;
+        if (label.SVGNode instanceof Element) {
+            label.SVGNode.setAttribute("opacity", opacity.toString());
         }
-        element.setAttribute("opacity", opacity.toString());
         if (opacity < 1.0) {
-            this.readAheadOpacityTouchedElements.add(element);
+            this.readAheadOpacityTouchedLabels.add(label);
         } else {
-            this.readAheadOpacityTouchedElements.delete(element);
+            this.readAheadOpacityTouchedLabels.delete(label);
         }
     }
 

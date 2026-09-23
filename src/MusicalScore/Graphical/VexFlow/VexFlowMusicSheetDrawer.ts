@@ -157,6 +157,13 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
         }
     }
 
+    public forgetSystemGroup(group: SVGGElement): void {
+        const index: number = this.SystemGroups.indexOf(group);
+        if (index >= 0) {
+            this.SystemGroups.splice(index, 1);
+        }
+    }
+
     public clear(): void {
         for (const backend of this.backends) {
             backend.clear();
@@ -180,6 +187,9 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
         const node: Node = super.drawLabel(graphicalLabel, layer);
         if (node) {
             graphicalLabel.SVGNode = node;
+            if (graphicalLabel.readAheadOpacity !== 1 && node instanceof Element) {
+                node.setAttribute("opacity", graphicalLabel.readAheadOpacity.toString());
+            }
             graphicalLabel.applySVGMaterializationHandlers();
         }
         return node;

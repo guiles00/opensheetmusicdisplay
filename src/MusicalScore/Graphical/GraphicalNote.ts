@@ -132,6 +132,18 @@ export class GraphicalNote extends GraphicalObject {
     // implemented in VexFlowGraphicalNote
   }
 
+  public addSVGRecreationHandler(handler: () => void): void {
+    void handler;
+  }
+
+  public addSVGEvictionHandler(handler: () => void): void {
+    void handler;
+  }
+
+  public releaseRenderedSVG(): void {
+    return;
+  }
+
   public hasOrnaments(): boolean {
     return this.parentVoiceEntry?.parentVoiceEntry?.OrnamentContainer !== undefined;
   }

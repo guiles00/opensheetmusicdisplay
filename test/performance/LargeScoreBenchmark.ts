@@ -18,6 +18,7 @@ interface IBenchmarkWindow {
 const benchmarkWindow: IBenchmarkWindow = window as unknown as IBenchmarkWindow;
 const benchmarkArgs: string[] = benchmarkWindow.__karma__?.config?.args ?? [];
 const benchmarkEnabled: boolean = benchmarkArgs.includes("bench");
+const boundedCache: boolean = benchmarkArgs.includes("bounded");
 const describeBenchmark: Mocha.SuiteFunction | Mocha.PendingSuiteFunction = benchmarkEnabled ? describe : describe.skip;
 const benchmarkLabel: string = benchmarkArgs.find(arg => arg.startsWith("label="))?.slice("label=".length) ?? "current";
 
@@ -83,7 +84,11 @@ async function benchmarkFixture(name: string, fixture: ILargeScoreFixtureOptions
     const loadStart: number = performance.now();
     await osmd.load(xml);
     const loadMs: number = performance.now() - loadStart;
-    osmd.enableSystemVirtualization({ scrollElement, overscanViewports: 1 });
+    osmd.enableSystemVirtualization({
+        scrollElement,
+        overscanViewports: 1,
+        maxCachedSvgNodes: boundedCache ? 24000 : undefined
+    });
     const virtualizedRenderMs: number = time(() => osmd.renderVirtualized({ initialSystems: 3 }));
     const totalSystems: number = osmd.SystemVirtualizationStats.totalSystems;
     const heapAfterRender: number | undefined = heapMegabytes();
@@ -135,6 +140,7 @@ async function benchmarkFixture(name: string, fixture: ILargeScoreFixtureOptions
         attachedAfterScroll: osmd.SystemVirtualizationStats.attachedSystems,
         liveDomNodes: container.getElementsByTagName("*").length,
         retainedSvgNodes: retainedSvgNodeCount(osmd),
+        evictedSystems: osmd.SystemVirtualizationStats.evictedSystems,
         fullRenderDomNodes: fullDomNodes,
         heapBeforeMb: heapBefore,
         heapAfterRenderMb: heapAfterRender,
@@ -159,7 +165,11 @@ describeBenchmark("Large score benchmark", function (): void {
         it(name, async () => {
             const result: Record<string, unknown> = await benchmarkFixture(name, fixture);
             console.log(`BENCH ${JSON.stringify(result)}`);
-            expect(result.materializedAfterScroll).to.equal(result.totalSystems);
+            if (boundedCache && (result.measures as number) >= 500) {
+                expect(result.evictedSystems as number).to.be.greaterThan(0);
+            } else if (!boundedCache) {
+                expect(result.materializedAfterScroll).to.equal(result.totalSystems);
+            }
         });
     }
 });

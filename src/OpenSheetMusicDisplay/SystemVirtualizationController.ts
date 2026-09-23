@@ -7,6 +7,7 @@ export interface ISystemVirtualizationOptions {
     activeMaterializationBudgetMs?: number;
     /** Milliseconds per frame spent drawing offscreen systems while the score is idle. Defaults to 10. */
     idleMaterializationBudgetMs?: number;
+    maxCachedSvgNodes?: number;
 }
 
 export interface ISystemVirtualizationStats {
@@ -20,9 +21,11 @@ export interface ISystemVirtualizationStats {
     /** Duration of the most recent system draw, and the running average used for frame budgeting. */
     lastMaterializationMs: number;
     averageMaterializationMs: number;
+    retainedSvgNodes: number;
+    evictedSystems: number;
 }
 
-export type SystemLifecycleEventType = "materialized" | "attached" | "detached";
+export type SystemLifecycleEventType = "materialized" | "attached" | "detached" | "evicted";
 
 /** Systems whose SVG was drawn for the first time, reinserted, or removed from the live DOM in one update. */
 export interface ISystemLifecycleEvent {
@@ -47,6 +50,8 @@ interface VirtualizedSystem {
     top: number;
     bottom: number;
     attached: boolean;
+    nodeCount: number;
+    lastVisited: number;
 }
 
 interface IndexedSystem {
@@ -61,6 +66,7 @@ interface SvgSystemIndex {
 }
 
 type MaterializeSystems = (keys: string[]) => SVGGElement[] | void;
+type EvictSystem = (key: string, root: SVGGElement) => void;
 
 /** Upper bound on skipped frames, so one pathological system can never stall the queue for long. */
 const MAX_MATERIALIZATION_COOLDOWN_FRAMES: number = 12;
@@ -97,6 +103,11 @@ export class SystemVirtualizationController {
     private systemIndex: Map<SVGSVGElement, SvgSystemIndex> | undefined;
     private readonly attachedKeys: Set<string> = new Set<string>();
     private readonly lifecycleListeners: Set<SystemLifecycleListener> = new Set<SystemLifecycleListener>();
+    private maxCachedSvgNodes: number = Number.POSITIVE_INFINITY;
+    private retainedSvgNodes: number = 0;
+    private evictedSystems: number = 0;
+    private visitNumber: number = 0;
+    private evictSystem: EvictSystem | undefined;
 
     public constructor(container: HTMLElement) {
         this.container = container;
@@ -112,6 +123,7 @@ export class SystemVirtualizationController {
         this.overscanViewports = Math.max(0, options?.overscanViewports ?? 1);
         this.activeBudgetMs = Math.max(0, options?.activeMaterializationBudgetMs ?? 4);
         this.idleBudgetMs = Math.max(0, options?.idleMaterializationBudgetMs ?? 10);
+        this.maxCachedSvgNodes = Math.max(0, options?.maxCachedSvgNodes ?? Number.POSITIVE_INFINITY);
         this.materializationCooldownFrames = 0;
         this.target.addEventListener("scroll", this.onScroll, { passive: true });
         window.addEventListener("resize", this.scheduleUpdate, { passive: true });
@@ -135,7 +147,8 @@ export class SystemVirtualizationController {
     /** Register the full laid-out score, including systems that have not been drawn yet. */
     public configureExpectedSystems(
         systems: IVirtualSystemDescriptor[],
-        materialize: MaterializeSystems
+        materialize: MaterializeSystems,
+        evict?: EvictSystem
     ): void {
         this.expectedSystems.clear();
         for (const system of systems) {
@@ -143,6 +156,7 @@ export class SystemVirtualizationController {
         }
         this.systemIndex = undefined;
         this.materializeSystems = materialize;
+        this.evictSystem = evict;
         this.refresh();
     }
 
@@ -187,6 +201,10 @@ export class SystemVirtualizationController {
         this.attachedKeys.clear();
         this.systemIndex = undefined;
         this.materializeSystems = undefined;
+        this.evictSystem = undefined;
+        this.retainedSvgNodes = 0;
+        this.evictedSystems = 0;
+        this.visitNumber = 0;
     }
 
     /** Discover newly rendered systems, then apply the current viewport window. */
@@ -225,7 +243,9 @@ export class SystemVirtualizationController {
             }
             const anchor: Comment = document.createComment(`osmd-system:${key}`);
             group.parentNode.insertBefore(anchor, group);
-            this.systems.set(key, { group, anchor, svg, top, bottom, attached: true });
+            const nodeCount: number = group.getElementsByTagName("*").length + 1;
+            this.systems.set(key, { group, anchor, svg, top, bottom, attached: true, nodeCount, lastVisited: ++this.visitNumber });
+            this.retainedSvgNodes += nodeCount;
             this.attachedKeys.add(key);
             if (!this.expectedSystems.has(key)) {
                 this.systemIndex = undefined;
@@ -379,8 +399,11 @@ export class SystemVirtualizationController {
         const attached: [string, SVGGElement][] = [];
         for (const key of inRange) {
             const system: VirtualizedSystem = this.systems.get(key);
-            if (system && this.attach(key, system)) {
-                attached.push([key, system.group]);
+            if (system) {
+                system.lastVisited = ++this.visitNumber;
+                if (this.attach(key, system)) {
+                    attached.push([key, system.group]);
+                }
             }
         }
         const detached: [string, SVGGElement][] = [];
@@ -392,6 +415,30 @@ export class SystemVirtualizationController {
         }
         this.emit("attached", attached);
         this.emit("detached", detached);
+        this.evictDistantSystems(inRange);
+    }
+
+    private evictDistantSystems(inRange: Set<string>): void {
+        if (this.retainedSvgNodes <= this.maxCachedSvgNodes || !this.evictSystem) {
+            return;
+        }
+        const candidates: [string, VirtualizedSystem][] = Array.from(this.systems)
+            .filter(([key, system]): boolean => !system.attached && !inRange.has(key))
+            .sort((a, b): number => a[1].lastVisited - b[1].lastVisited);
+        const evicted: [string, SVGGElement][] = [];
+        for (const [key, system] of candidates) {
+            if (this.retainedSvgNodes <= this.maxCachedSvgNodes) {
+                break;
+            }
+            this.evictSystem(key, system.group);
+            system.anchor.remove();
+            system.group.replaceChildren();
+            this.systems.delete(key);
+            this.retainedSvgNodes -= system.nodeCount;
+            this.evictedSystems++;
+            evicted.push([key, system.group]);
+        }
+        this.emit("evicted", evicted);
     }
 
     public get stats(): ISystemVirtualizationStats {
@@ -404,7 +451,9 @@ export class SystemVirtualizationController {
             unmaterializedSystems: Math.max(0, this.expectedSystems.size - this.systems.size),
             pendingMaterializations: this.pendingMaterializationKeys.length,
             lastMaterializationMs: this.lastMaterializationMs,
-            averageMaterializationMs: this.averageMaterializationMs
+            averageMaterializationMs: this.averageMaterializationMs,
+            retainedSvgNodes: this.retainedSvgNodes,
+            evictedSystems: this.evictedSystems
         };
     }
 
