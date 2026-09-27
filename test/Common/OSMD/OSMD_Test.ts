@@ -16,6 +16,9 @@ import { GraphicalLabel } from "../../../src/MusicalScore/Graphical/GraphicalLab
 import { Fraction } from "../../../src/Common/DataObjects/Fraction";
 import { AccidentalEnum, Pitch } from "../../../src/Common/DataObjects/Pitch";
 import { SourceStaffEntry } from "../../../src/MusicalScore/VoiceData/SourceStaffEntry";
+import { GraphicalSlur } from "../../../src/MusicalScore/Graphical/GraphicalSlur";
+import { BoundingBox } from "../../../src/MusicalScore/Graphical/BoundingBox";
+import { PointF2D } from "../../../src/Common/DataObjects/PointF2D";
 
 describe("OpenSheetMusicDisplay Main Export", () => {
     let container1: HTMLElement;
@@ -201,6 +204,59 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         osmd.setFingeringValues(sourceStaffEntry, undefined);
         expect(osmd.getFingeringValues(sourceStaffEntry)).to.deep.equal(nativeValues);
         expect(div.querySelector("svg")).to.equal(sheetSvg);
+    });
+
+    it("places in-place fingerings next to the notes under a slur, and above it only where the slur is in the way", async () => {
+        const pitches: string[][] = [["A", "5"], ["G", "5"], ["E", "5"], ["C", "5"], ["E", "4"], ["B", "4"], ["E", "5"], ["G", "5"]];
+        const notes: string = pitches.map(([step, octave]: string[], index: number): string => {
+            const beam: string = index % 4 === 0 ? "begin" : index % 4 === 3 ? "end" : "continue";
+            const slurNotation: string = index === 0 ? "<notations><slur type=\"start\" number=\"1\"/></notations>" :
+                index === pitches.length - 1 ? "<notations><slur type=\"stop\" number=\"1\"/></notations>" : "";
+            return `<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>1</duration>` +
+                `<voice>1</voice><type>eighth</type><beam number="1">${beam}</beam>${slurNotation}</note>`;
+        }).join("");
+        const xml: string = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><score-partwise version=\"3.1\">" +
+            "<part-list><score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>" +
+            "<part id=\"P1\"><measure number=\"1\"><attributes><divisions>2</divisions><key><fifths>0</fifths></key>" +
+            "<time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>" +
+            notes + "</measure></part></score-partwise>";
+        const div: HTMLElement = TestUtils.getDivElement(document);
+        const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
+        await osmd.load(xml);
+        osmd.render();
+
+        const staffEntries: SourceStaffEntry[] = osmd.Sheet.SourceMeasures[0].VerticalSourceStaffEntryContainers
+            .map((container) => container.StaffEntries[0]);
+        const labelFor: (index: number) => GraphicalLabel = (index: number): GraphicalLabel => {
+            osmd.setFingeringValues(staffEntries[index], ["1"]);
+            return osmd.GraphicSheet.GetGraphicalFromSourceStaffEntry(staffEntries[index]).FingeringEntries[0];
+        };
+        const slur: GraphicalSlur = osmd.GraphicSheet.GetGraphicalFromSourceStaffEntry(staffEntries[0])
+            .parentMeasure.ParentStaffLine.GraphicalSlurs[0];
+        const slurYAt: (x: number) => number = (x: number): number => {
+            const points: PointF2D[] = [slur.bezierStartPt, slur.bezierStartControlPt, slur.bezierEndControlPt, slur.bezierEndPt];
+            let closest: PointF2D;
+            for (let step: number = 0; step <= 400; step++) {
+                const t: number = step / 400;
+                const s: number = 1 - t;
+                const weights: number[] = [s * s * s, 3 * s * s * t, 3 * s * t * t, t * t * t];
+                const point: PointF2D = new PointF2D(
+                    weights.reduce((sum: number, w: number, i: number) => sum + w * points[i].x, 0),
+                    weights.reduce((sum: number, w: number, i: number) => sum + w * points[i].y, 0));
+                if (!closest || Math.abs(point.x - x) < Math.abs(closest.x - x)) {
+                    closest = point;
+                }
+            }
+            return closest.y;
+        };
+
+        const underSlur: GraphicalLabel = labelFor(3);
+        const underBox: BoundingBox = underSlur.PositionAndShape;
+        expect(underBox.RelativePosition.y + underBox.BorderTop).to.be.greaterThan(slurYAt(underBox.RelativePosition.x));
+
+        const atSlurStart: GraphicalLabel = labelFor(0);
+        const startBox: BoundingBox = atSlurStart.PositionAndShape;
+        expect(startBox.RelativePosition.y + startBox.BorderBottom).to.be.lessThan(slurYAt(startBox.RelativePosition.x) - 0.3);
     });
 
     it.skip("Timeout from server", (done: Mocha.Done) => {

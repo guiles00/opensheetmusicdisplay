@@ -1029,10 +1029,12 @@ export abstract class MusicSheetCalculator {
         if (this.rules.RenderFingerings) {
             this.calculateFingerings(); // if this is done after slurs, fingerings can be on top of slurs
         }
+        this.saveSkyBottomLines(true);
         // calculate Slurs
         if (!this.leadSheet && this.rules.RenderSlurs) {
             this.calculateSlurs();
         }
+        this.saveSkyBottomLines(false);
         this.calculateGlissandi();
         //Calculate measure number skyline AFTER slurs
         if (this.rules.RenderMeasureNumbers) {
@@ -3495,6 +3497,18 @@ export abstract class MusicSheetCalculator {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private saveSkyBottomLines(beforeSlurs: boolean): void {
+        for (const system of this.musicSystems) {
+            for (const line of system.StaffLines) {
+                if (beforeSlurs) {
+                    line.SkyBottomLineCalculator?.saveFingeringLines();
+                } else {
+                    line.SkyBottomLineCalculator?.saveSlurLines();
                 }
             }
         }

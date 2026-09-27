@@ -22,6 +22,10 @@ export class SkyBottomLineCalculator {
     private mBottomLine: number[];
     /** Engraving rules for formatting */
     private mRules: EngravingRules;
+    public FingeringSkyLine: number[];
+    public FingeringBottomLine: number[];
+    public SlurSkyLine: number[];
+    public SlurBottomLine: number[];
 
     /**
      * Create a new object of the calculator
@@ -528,6 +532,24 @@ export class SkyBottomLineCalculator {
     public setLinesDirectly(skyLine: number[], bottomLine: number[]): void {
         this.mSkyLine = skyLine;
         this.mBottomLine = bottomLine;
+    }
+
+    public saveFingeringLines(): void {
+        this.FingeringSkyLine = this.mSkyLine?.slice();
+        this.FingeringBottomLine = this.mBottomLine?.slice();
+    }
+
+    public saveSlurLines(): void {
+        this.SlurSkyLine = this.mSkyLine?.slice();
+        this.SlurBottomLine = this.mBottomLine?.slice();
+    }
+
+    public getMinInLineRange(line: number[], startIndex: number, endIndex: number): number {
+        return this.getMinInRange(line, startIndex, endIndex);
+    }
+
+    public getMaxInLineRange(line: number[], startIndex: number, endIndex: number): number {
+        return this.getMaxInRange(line, startIndex, endIndex);
     }
 
     /**

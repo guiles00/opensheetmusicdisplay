@@ -99,6 +99,7 @@ export class OpenSheetMusicDisplay {
      * contains the removed native label, so querying it again would incorrectly push a replacement outward.
      */
     private readonly fingeringAnchors: WeakMap<SourceStaffEntry, number> = new WeakMap();
+    private readonly inPlaceFingeringLabels: WeakSet<GraphicalLabel> = new WeakSet();
 
     /**
      * Creates and attaches an OpenSheetMusicDisplay object to an HTML element container.<br>
@@ -2598,7 +2599,8 @@ export class OpenSheetMusicDisplay {
                                   instructions: TechnicalInstruction[]): void {
         const oldLabels: GraphicalLabel[] = graphicalStaffEntry.FingeringEntries ?? [];
         const sourceStaffEntry: SourceStaffEntry = graphicalStaffEntry.sourceStaffEntry;
-        const renderedAnchorY: number = oldLabels[0]?.PositionAndShape.RelativePosition.y;
+        const renderedAnchorY: number = oldLabels[0] && !this.inPlaceFingeringLabels.has(oldLabels[0]) ?
+            oldLabels[0].PositionAndShape.RelativePosition.y : undefined;
         if (renderedAnchorY !== undefined) {
             this.fingeringAnchors.set(sourceStaffEntry, renderedAnchorY);
         }
@@ -2668,6 +2670,12 @@ export class OpenSheetMusicDisplay {
                 const offset: number = this.rules.FingeringOffsetY + (placement === PlacementEnum.Above ? 0.1 : 0);
                 graphicalLabel.PositionAndShape.RelativePosition.y = furthest +
                     (placement === PlacementEnum.Above ? -offset : offset);
+                graphicalLabel.PositionAndShape.RelativePosition.y = this.getFingeringYNextToNotes(
+                    staffLine, placement, graphicalLabel, marginLeft, marginRight, offset, orderedInstructions.length) ??
+                    graphicalLabel.PositionAndShape.RelativePosition.y;
+            }
+            if (anchorY === undefined) {
+                this.inPlaceFingeringLabels.add(graphicalLabel);
             }
 
             graphicalLabel.PositionAndShape.calculateBoundingBox();
@@ -2677,10 +2685,67 @@ export class OpenSheetMusicDisplay {
                     graphicalLabel.PositionAndShape.BorderBottom);
             graphicalLabel.SVGNode = this.drawer.drawLabel(graphicalLabel, GraphicalLayers.Notes);
             graphicalStaffEntry.FingeringEntries.push(graphicalLabel);
-            if (index === 0 && !this.fingeringAnchors.has(sourceStaffEntry)) {
-                this.fingeringAnchors.set(sourceStaffEntry, graphicalLabel.PositionAndShape.RelativePosition.y);
+        }
+    }
+
+    private getFingeringYNextToNotes(staffLine: StaffLine, placement: PlacementEnum, label: GraphicalLabel,
+                                     left: number, right: number, offset: number, count: number): number {
+        const skyline: SkyBottomLineCalculator = staffLine.SkyBottomLineCalculator;
+        const above: boolean = placement === PlacementEnum.Above;
+        const fingeringLine: number[] = above ? skyline?.FingeringSkyLine : skyline?.FingeringBottomLine;
+        const slurLine: number[] = above ? skyline?.SlurSkyLine : skyline?.SlurBottomLine;
+        if (!fingeringLine || !slurLine) {
+            return undefined;
+        }
+        const current: number = above ? skyline.getSkyLineMinInRange(left, right) : skyline.getBottomLineMaxInRange(left, right);
+        const afterSlurs: number = above ? skyline.getMinInLineRange(slurLine, left, right) :
+            skyline.getMaxInLineRange(slurLine, left, right);
+        if (current !== afterSlurs) {
+            return undefined;
+        }
+        const y: number = above ? skyline.getMinInLineRange(fingeringLine, left, right) - offset :
+            skyline.getMaxInLineRange(fingeringLine, left, right) + offset;
+        const currentY: number = current + (above ? -offset : offset);
+        if (!Number.isFinite(y) || (above ? y <= currentY : y >= currentY)) {
+            return undefined;
+        }
+
+        const box: BoundingBox = label.PositionAndShape;
+        const padding: number = 0.2;
+        const stackHeight: number = count * (box.BorderBottom - box.BorderTop) + (count - 1) * this.rules.FingeringPaddingY;
+        const top: number = (above ? y + box.BorderBottom - stackHeight : y + box.BorderTop) - padding;
+        const bottom: number = top + stackHeight + 2 * padding;
+        const minX: number = box.RelativePosition.x + box.BorderLeft - padding;
+        const maxX: number = box.RelativePosition.x + box.BorderRight + padding;
+        for (const line of staffLine.ParentMusicSystem.StaffLines) {
+            if (line.GraphicalGlissandi.length > 0) {
+                return undefined;
+            }
+            const dx: number = line.PositionAndShape.RelativePosition.x - staffLine.PositionAndShape.RelativePosition.x;
+            const dy: number = line.PositionAndShape.RelativePosition.y - staffLine.PositionAndShape.RelativePosition.y;
+            for (const slur of line.GraphicalSlurs) {
+                const points: PointF2D[] = [slur.bezierStartPt, slur.bezierStartControlPt, slur.bezierEndControlPt, slur.bezierEndPt];
+                if (points.some((point: PointF2D) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+                    continue;
+                }
+                for (let step: number = 0; step <= 40; step++) {
+                    const t: number = step / 40;
+                    const s: number = 1 - t;
+                    const weights: number[] = [s * s * s, 3 * s * s * t, 3 * s * t * t, t * t * t];
+                    const x: number = weights.reduce((sum: number, w: number, i: number) => sum + w * points[i].x, 0) + dx;
+                    if (x < minX || x > maxX) {
+                        continue;
+                    }
+                    const curveY: number = weights.reduce((sum: number, w: number, i: number) => sum + w * points[i].y, 0) + dy;
+                    const thickness: number = 0.05 * (weights[0] + weights[3]) + 0.3 * (weights[1] + weights[2]);
+                    const outerY: number = curveY + (slur.placement === PlacementEnum.Above ? -thickness : thickness);
+                    if (Math.max(curveY, outerY) >= top && Math.min(curveY, outerY) <= bottom) {
+                        return undefined;
+                    }
+                }
             }
         }
+        return y;
     }
 
     /** Returns the version of OSMD this object is built from (the version you are using). */
