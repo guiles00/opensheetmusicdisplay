@@ -358,7 +358,13 @@ export class StaveNote extends StemmableNote {
         && mergeableUnison(noteU, noteM, stagger_same_whole_notes)) ||
       (intersectsLower && noteL.note.getKeyProps().length === 1
         && mergeableUnison(noteM, noteL, stagger_same_whole_notes)));
-    if (!isUnisonWithNeighbour && (intersectsUpper || intersectsLower)) {
+    // Crossing stems alone do not require staggered noteheads. In three-voice
+    // piano writing, two half notes a third apart can share a column even when
+    // their stems intersect another voice (Mozart K. 310, m. 59: F#4/A4/C5).
+    // Only a unison that cannot merge, or a second, needs horizontal clearance.
+    const collidesWithUpperHead = intersectsUpper && closestKeyLineDiff(noteU, noteM) < 1;
+    const collidesWithLowerHead = intersectsLower && closestKeyLineDiff(noteM, noteL) < 1;
+    if (!isUnisonWithNeighbour && (collidesWithUpperHead || collidesWithLowerHead)) {
       xShift = voiceXShift + 3;      // shift middle note right
       noteM.note.setXShift(xShift);
     }

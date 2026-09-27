@@ -14,14 +14,14 @@ describe("VexFlow Measure - Three-Voice Unison Alignment", () => {
 
    const path: string = "test_three_voice_unison_alignment.musicxml";
 
-   function firstMeasure(): VexFlowMeasure {
-      const score: Document = TestUtils.getScore(path);
+   function firstMeasure(filename: string = path): VexFlowMeasure {
+      const score: Document = TestUtils.getScore(filename);
       expect(score).to.not.be.undefined;
       const partwise: Element = TestUtils.getPartWiseElement(score);
       expect(partwise).to.not.be.undefined;
       const reader: MusicSheetReader = new MusicSheetReader();
       const calc: VexFlowMusicSheetCalculator = new VexFlowMusicSheetCalculator(reader.rules);
-      const sheet: MusicSheet = reader.createMusicSheet(new IXmlElement(partwise), path);
+      const sheet: MusicSheet = reader.createMusicSheet(new IXmlElement(partwise), filename);
       const gms: GraphicalMusicSheet = new GraphicalMusicSheet(sheet, calc);
       calc.calculate();
       return gms.MeasureList[0][0] as VexFlowMeasure;
@@ -60,6 +60,19 @@ describe("VexFlow Measure - Three-Voice Unison Alignment", () => {
       expect(middle, "voice 2 should be present on beat 2").to.not.be.undefined;
       expect(xShift(middle)).to.be.greaterThan(0,
          "a second-interval collision must still be staggered (noteheads cannot overlap)");
+      done();
+   });
+
+   it("Should align separate-voice half notes a third apart in a three-voice chord", (done: Mocha.Done) => {
+      // Mozart K. 310, m. 59: upper voice C5, inner voices F#4 and A4.
+      // Their noteheads do not collide, even though the stems cross other voices.
+      const measure: VexFlowMeasure = firstMeasure("test_three_voice_thirds_k310.musicxml");
+      const gves: VexFlowVoiceEntry[] = voiceEntriesAt(measure, 0);
+      expect(gves.length).to.equal(3);
+      for (const gve of gves) {
+         expect(xShift(gve)).to.equal(0,
+            "third-spaced noteheads should stay in the same column");
+      }
       done();
    });
 
