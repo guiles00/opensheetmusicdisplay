@@ -609,6 +609,11 @@ export class InstrumentReader {
       log.debug("InstrumentReader.readNextXmlMeasure", errorMsg, e);
     }
 
+    // A stop-before-start tie can only be paired within this MusicXML measure:
+    // later measures are always read in musical order.
+    for (const staff of this.instrument.Staves) {
+      staff.pendingTieStops.length = 0;
+    }
     this.previousMeasure = this.currentMeasure;
     this.currentXmlMeasureIndex += 1;
     return true;

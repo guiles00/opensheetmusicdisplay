@@ -1,6 +1,9 @@
 import {Voice} from "./Voice";
 import {Instrument} from "../Instrument";
 import { Tie } from "./Tie";
+import { Note } from "./Note";
+import { TieTypes } from "../../Common/Enums";
+import { Fraction } from "../../Common/DataObjects/Fraction";
 
 export class Staff {
 
@@ -25,6 +28,8 @@ export class Staff {
     private stafflineCount: number = 5;
     public hasLyrics: boolean = false;
     public openTieDict: { [_: number]: Tie } = {};
+    /** Stops encountered before their starts when MusicXML lists voices separately. */
+    public pendingTieStops: { note: Note, type: TieTypes, timestamp: Fraction }[] = [];
 
     public get ParentInstrument(): Instrument {
         return this.parentInstrument;

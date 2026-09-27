@@ -724,6 +724,7 @@ export class VexFlowMeasure extends GraphicalMeasure {
             if (tie instanceof VF.TabSlide) {
                 continue; // rendered later in VexFlowMusicSheetDrawer.drawGlissandi(), when all staffline measures are rendered
             }
+            this.placeTieAroundNotes(tie);
             tie.setContext(ctx);
             tie.draw();
         }
@@ -736,6 +737,110 @@ export class VexFlowMeasure extends GraphicalMeasure {
             ctx.closeGroup();
         }
         this.correctNotePositions();
+    }
+
+    /** Choose the shallower side of an unspecified tie that intersects fewer symbols. */
+    private placeTieAroundNotes(tie: VF.StaveTie): void {
+        if (tie instanceof VF.TabTie) {
+            return;
+        }
+        const staveTie: any = tie;
+        if (staveTie.directionFromXml || !staveTie.first_note || !staveTie.last_note) {
+            return; // preserve MusicXML placement and partial ties at system breaks
+        }
+        const first: VF.StaveNote = staveTie.first_note;
+        const last: VF.StaveNote = staveTie.last_note;
+        const left: number = first.getTieRightX();
+        const right: number = last.getTieLeftX();
+        if (right <= left) {
+            return;
+        }
+
+        const ownsFirst: boolean = this.staffEntries.some((staffEntry) =>
+            (staffEntry.graphicalVoiceEntries as VexFlowVoiceEntry[]).some((voiceEntry) => voiceEntry.vfStaveNote === first));
+        const lineMeasures: VexFlowMeasure[] = (this.ParentStaffLine?.Measures ?? []) as VexFlowMeasure[];
+        const endIndex: number = lineMeasures.indexOf(this);
+        const measures: VexFlowMeasure[] = ownsFirst || endIndex <= 0 ? [this] : [lineMeasures[endIndex - 1], this];
+        const obstacles: { left: number, right: number, top: number, bottom: number, weight: number }[] = [];
+        for (const measure of measures) {
+            for (const staffEntry of measure.staffEntries) {
+                for (const voiceEntry of staffEntry.graphicalVoiceEntries as VexFlowVoiceEntry[]) {
+                    const note: VF.StaveNote = voiceEntry.vfStaveNote as VF.StaveNote;
+                    if (!note || note === first || note === last || note.isRest()) {
+                        continue;
+                    }
+                    const headLeft: number = note.getNoteHeadBeginX();
+                    const headRight: number = note.getNoteHeadEndX();
+                    if (headRight < left || headLeft - 24 > right) {
+                        continue;
+                    }
+                    const ys: number[] = note.getYs();
+                    for (const y of ys) {
+                        obstacles.push({ left: headLeft, right: headRight, top: y - 6, bottom: y + 6, weight: 4 });
+                    }
+                    for (const modifier of (note as any).modifiers || []) {
+                        if (modifier instanceof VF.Accidental) {
+                            const y: number = ys[modifier.getIndex()];
+                            if (Number.isFinite(y)) {
+                                obstacles.push({ left: headLeft - 24, right: headLeft, top: y - 14, bottom: y + 14, weight: 2 });
+                            }
+                        }
+                    }
+                    if (note.hasStem()) {
+                        const stemX: number = note.getStemX();
+                        const extents: { topY: number, baseY: number } = note.getStemExtents();
+                        obstacles.push({ left: stemX - 1, right: stemX + 1,
+                            top: Math.min(extents.topY, extents.baseY), bottom: Math.max(extents.topY, extents.baseY), weight: 0.3 });
+                    }
+                }
+            }
+        }
+
+        const startY: number = first.getYs()[staveTie.first_indices[0]];
+        const endY: number = last.getYs()[staveTie.last_indices[0]];
+        if (!Number.isFinite(startY) || !Number.isFinite(endY)) {
+            return;
+        }
+        staveTie.autoBaseDirection ??= staveTie.direction || last.getStemDirection();
+        const originalDirection: number = staveTie.autoBaseDirection;
+        const chordYs: number[] = first.getYs();
+        const isChordTop: boolean = chordYs.length > 1 && startY <= Math.min(...chordYs);
+        const isChordBottom: boolean = chordYs.length > 1 && startY >= Math.max(...chordYs);
+        let best: { direction: number, height: number, cost: number };
+        for (const direction of [-1, 1]) {
+            if (direction !== originalDirection && (direction === 1 && isChordTop || direction === -1 && isChordBottom)) {
+                continue;
+            }
+            for (const height of [8, 12, 16, 20, 24]) {
+                let cost: number = (height - 8) * 0.15 + (direction === originalDirection ? 0 : 0.1);
+                const y0: number = startY + 7 * direction;
+                const y1: number = endY + 7 * direction;
+                for (const obstacle of obstacles) {
+                    const x0: number = Math.max(left + 1, obstacle.left);
+                    const x1: number = Math.min(right - 1, obstacle.right);
+                    if (x0 > x1) {
+                        continue;
+                    }
+                    for (const x of [x0, (x0 + x1) / 2, x1]) {
+                        const t: number = (x - left) / (right - left);
+                        const u: number = t;
+                        const baseline: number = y0 + (y1 - y0) * u;
+                        const factor: number = 2 * u * (1 - u);
+                        const curve1: number = baseline + factor * height * direction;
+                        const curve2: number = baseline + factor * (height + 4) * direction;
+                        const overlap: number = Math.min(obstacle.bottom, Math.max(curve1, curve2) + 1) -
+                            Math.max(obstacle.top, Math.min(curve1, curve2) - 1);
+                        cost += Math.max(0, overlap) * obstacle.weight;
+                    }
+                }
+                if (!best || cost < best.cost) {
+                    best = { direction, height, cost };
+                }
+            }
+        }
+        staveTie.direction = best.direction;
+        staveTie.render_options.cp1 = best.height;
+        staveTie.render_options.cp2 = best.height + 4;
     }
 
     // this currently formats multiple measures, see VexFlowMusicSheetCalculator.formatMeasures()
@@ -1839,6 +1944,7 @@ export class VexFlowMeasure extends GraphicalMeasure {
     public addStaveTie(stavetie: VF.StaveTie, graphicalTie: GraphicalTie): void {
         this.vfTies.push(stavetie);
         graphicalTie.vfTie = stavetie;
+        (stavetie as any).directionFromXml = graphicalTie.Tie.TieDirectionFromXml;
         if (graphicalTie.Tie.TieDirection === PlacementEnum.Below) {
             (stavetie as any).setDirection(1);
         }

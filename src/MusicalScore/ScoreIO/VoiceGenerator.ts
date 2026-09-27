@@ -1128,15 +1128,30 @@ export class VoiceGenerator {
               }
               const newTieNumber: number = this.getNextAvailableNumberForTie();
               const tie: Tie = new Tie(this.currentNote, tieType);
-              this.openTieDict[newTieNumber] = tie;
               tie.TieNumber = newTieNumber;
               tie.TieDirection = tieDirection;
+              tie.TieDirectionFromXml = tieDirection !== PlacementEnum.NotYetDefined;
+              const tieEndTimestamp: Fraction = Fraction.plus(
+                Fraction.plus(measureStartAbsoluteTimestamp, this.currentVoiceEntry.Timestamp), this.currentNote.Length);
+              const pendingIndex: number = this.staff.pendingTieStops.findIndex(({ note, type: pendingType, timestamp }) =>
+                pendingType === tieType && this.currentNote.Pitch && note.Pitch.getHalfTone() === this.currentNote.Pitch.getHalfTone() &&
+                tieEndTimestamp.Equals(timestamp));
+              if (pendingIndex >= 0) {
+                // In a voice-by-voice MusicXML measure, the stop may precede the
+                // earlier start in document order. Pair them by musical time.
+                tie.AddNote(this.staff.pendingTieStops.splice(pendingIndex, 1)[0].note);
+              } else {
+                this.openTieDict[newTieNumber] = tie;
+              }
             } else if (type === "stop") {
               const tieNumber: number = this.findCurrentNoteInTieDict(this.currentNote);
               const tie: Tie = this.openTieDict[tieNumber];
               if (tie) {
                 tie.AddNote(this.currentNote);
                 delete this.openTieDict[tieNumber];
+              } else if (this.currentNote.Pitch) {
+                this.staff.pendingTieStops.push({ note: this.currentNote, type: tieType,
+                  timestamp: Fraction.plus(measureStartAbsoluteTimestamp, this.currentVoiceEntry.Timestamp) });
               }
             }
           } catch (err) {
@@ -1155,6 +1170,9 @@ export class VoiceGenerator {
             if (type === "start") {
               const placement: PlacementEnum = this.getTieDirection(tieNode);
               tie.NoteIndexToTieDirection[tie.Notes.length - 1] = placement;
+              if (placement !== PlacementEnum.NotYetDefined) {
+                tie.TieDirectionFromXml = true;
+              }
             }
           }
         }

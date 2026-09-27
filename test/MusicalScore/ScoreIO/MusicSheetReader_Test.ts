@@ -249,6 +249,28 @@ describe("Music Sheet Reader", () => {
         });
     });
 
+    it("pairs ties whose stop precedes the start in voice-ordered MusicXML", (done: Mocha.Done) => {
+        // K. 310 m. 59 lists voice 1's C5 tie stop before voice 2's
+        // earlier C5 start. The two notes are adjacent in musical time.
+        const filename: string = "test/data/test_tie_voice_order_k310.musicxml";
+        const doc: Document = getSheet(filename);
+        expect(doc).to.not.be.undefined;
+        const tieSheet: MusicSheet = reader.createMusicSheet(
+            new IXmlElement(doc.getElementsByTagName("score-partwise")[0]), filename);
+        const notes: Note[] = tieSheet.Instruments[0].Voices.flatMap((voice) =>
+            voice.VoiceEntries.flatMap((entry: VoiceEntry): Note[] => entry.Notes));
+        const start: Note = notes.find((note: Note): boolean =>
+            note.SourceMeasure === tieSheet.SourceMeasures[0] && note.ParentVoiceEntry.ParentVoice.VoiceId === 2 &&
+            Math.abs(note.getAbsoluteTimestamp().RealValue) < 1e-8 && !note.isRest());
+        expect(start).to.not.be.undefined;
+        expect(start.NoteTie).to.not.be.undefined;
+        expect(start.NoteTie.Notes.length).to.equal(2);
+        expect(start.NoteTie.Notes[1].SourceMeasure).to.equal(tieSheet.SourceMeasures[0]);
+        expect(start.NoteTie.Notes[1].getAbsoluteTimestamp().RealValue).to.be.closeTo(0.5, 1e-8);
+        expect(tieSheet.Staves[0].pendingTieStops).to.be.empty;
+        done();
+    });
+
     describe("Tuplet note duration with un-reduced <duration> (musx2mxl export bug)", () => {
         // Some exporters (musx2mxl 0.2.9) write the *un-reduced* type duration for tuplet notes:
         //   a triplet eighth carries <duration> equal to a full eighth (e.g. 8 at divisions=16)
