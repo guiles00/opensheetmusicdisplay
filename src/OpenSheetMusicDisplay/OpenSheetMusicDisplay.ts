@@ -623,6 +623,25 @@ export class OpenSheetMusicDisplay {
                         }
                     }
                 }
+                for (const slur of staffLine.GraphicalSlurs ?? []) {
+                    if (slur.SVGElement && root.contains(slur.SVGElement)) {
+                        slur.SVGElement = undefined;
+                    }
+                }
+            }
+            const pending: BoundingBox[] = [system.PositionAndShape];
+            while (pending.length > 0) {
+                const box: BoundingBox = pending.pop();
+                const data: { SVGNode?: Node, SVGElement?: Node } = box?.DataObject as { SVGNode?: Node, SVGElement?: Node };
+                if (data?.SVGNode && root.contains(data.SVGNode)) {
+                    data.SVGNode = undefined;
+                }
+                if (data?.SVGElement && root.contains(data.SVGElement)) {
+                    data.SVGElement = undefined;
+                }
+                for (const child of box?.ChildElements ?? []) {
+                    pending.push(child);
+                }
             }
         }
         this.drawer.forgetSystemGroup(root);

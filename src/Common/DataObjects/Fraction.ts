@@ -67,9 +67,9 @@ export class Fraction {
     while (Math.abs(b) >= 1 && Math.abs(a) >= 1) { // accounts for floating point inaccuracies. smallest GCD is 1.
       // if we don't check a > 1e-8, we infinite loop for e.g. a = 2.666666666666667, b = 4. See #1478 (rare)
       if (a > b) {
-        a -= b;
+        a -= (Math.ceil(a / b) - 1) * b;
       } else {
-        b -= a;
+        b -= Math.floor(b / a) * a;
       }
     }
 
