@@ -105,4 +105,40 @@ describe("SystemVirtualizationController offscreen drawing pace", () => {
         runFrame();
         expect(drawnKeys.length).to.equal(afterFirstFrame + 1);
     });
+
+    it("waits for a fling to slow down before drawing the systems it passes", () => {
+        let scrollTop: number = 0;
+        svg.getScreenCTM = (): DOMMatrix => new DOMMatrix().translate(0, -scrollTop);
+        const descriptors: IVirtualSystemDescriptor[] = [];
+        for (let index: number = 0; index < 40; index++) {
+            descriptors.push({ key: `1:${index}`, svg, top: index * 200, bottom: index * 200 + 80 });
+        }
+        const drawnKeys: string[] = [];
+        const controller: SystemVirtualizationController = new SystemVirtualizationController(container);
+        controller.enable({ scrollElement, overscanViewports: 0 });
+        controller.configureExpectedSystems(descriptors, (keys: string[]): SVGGElement[] => keys.map((key: string): SVGGElement => {
+            drawnKeys.push(key);
+            const descriptor: IVirtualSystemDescriptor = descriptors.find(candidate => candidate.key === key);
+            const group: SVGGElement = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            group.classList.add("osmd-system");
+            group.dataset.osmdSystemKey = key;
+            group.dataset.osmdSystemTop = descriptor.top.toString();
+            group.dataset.osmdSystemBottom = descriptor.bottom.toString();
+            svg.appendChild(group);
+            return group;
+        }));
+        expect(drawnKeys).to.deep.equal(["1:0"]);
+
+        for (const top of [2000, 4000, 6000]) {
+            clockMs += 16;
+            scrollTop = top;
+            controller.updateNow();
+        }
+        expect(drawnKeys).to.deep.equal(["1:0", "1:10"]);
+
+        clockMs += 16;
+        runFrame();
+        expect(drawnKeys).to.deep.equal(["1:0", "1:10", "1:30"]);
+        controller.disable();
+    });
 });

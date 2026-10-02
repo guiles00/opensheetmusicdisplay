@@ -2640,6 +2640,7 @@ export class OpenSheetMusicDisplay {
         }
 
         const measure: GraphicalMeasure = graphicalStaffEntry.parentMeasure;
+        const systemGroup: SVGGElement = this.findSystemGroup(measure.ParentStaffLine?.ParentMusicSystem);
         let placement: PlacementEnum = this.rules.FingeringPosition;
         if (placement === PlacementEnum.NotYetDefined || placement === PlacementEnum.AboveOrBelow) {
             placement = measure.isUpperStaffOfInstrument() ? PlacementEnum.Above : PlacementEnum.Below;
@@ -2702,9 +2703,31 @@ export class OpenSheetMusicDisplay {
             previousBoundary = graphicalLabel.PositionAndShape.RelativePosition.y +
                 (placement === PlacementEnum.Above ? graphicalLabel.PositionAndShape.BorderTop :
                     graphicalLabel.PositionAndShape.BorderBottom);
-            graphicalLabel.SVGNode = this.drawer.drawLabel(graphicalLabel, GraphicalLayers.Notes);
+            if (systemGroup) {
+                const node: Node = this.drawer.drawLabel(graphicalLabel, GraphicalLayers.Notes);
+                if (node && node.parentNode !== systemGroup) {
+                    systemGroup.appendChild(node);
+                }
+                graphicalLabel.SVGNode = node;
+            }
             graphicalStaffEntry.FingeringEntries.push(graphicalLabel);
         }
+    }
+
+    private findSystemGroup(system: MusicSystem): SVGGElement {
+        const page: GraphicalMusicPage = system?.Parent;
+        const systemIndex: number = page?.MusicSystems.indexOf(system) ?? -1;
+        if (systemIndex < 0) {
+            return undefined;
+        }
+        const key: string = `${page.PageNumber}:${systemIndex}`;
+        const groups: SVGGElement[] = this.drawer?.SystemGroups ?? [];
+        for (let index: number = groups.length - 1; index >= 0; index--) {
+            if (groups[index].getAttribute("data-osmd-system-key") === key) {
+                return groups[index];
+            }
+        }
+        return undefined;
     }
 
     private getFingeringYNextToNotes(staffLine: StaffLine, placement: PlacementEnum, label: GraphicalLabel,

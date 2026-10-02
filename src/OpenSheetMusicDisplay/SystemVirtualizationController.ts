@@ -70,6 +70,10 @@ type EvictSystem = (key: string, root: SVGGElement) => void;
 
 /** Upper bound on skipped frames, so one pathological system can never stall the queue for long. */
 const MAX_MATERIALIZATION_COOLDOWN_FRAMES: number = 12;
+const FAST_SCROLL_VIEWPORTS_PER_SECOND: number = 3;
+const FAST_SCROLL_MIN_FRAME_GAP_MS: number = 4;
+const FAST_SCROLL_MAX_FRAME_GAP_MS: number = 100;
+const FAST_SCROLL_MIN_FRAMES: number = 2;
 
 interface VirtualizationViewport {
     top: number;
@@ -95,6 +99,8 @@ export class SystemVirtualizationController {
     private idleBudgetMs: number = 10;
     private lastScrollAt: number = Number.NEGATIVE_INFINITY;
     private lastContentOffset: number | undefined;
+    private lastContentOffsetAt: number = 0;
+    private fastScrollFrames: number = 0;
     private scrollDirection: number = 0;
     private lastMaterializationMs: number = 0;
     private averageMaterializationMs: number = 0;
@@ -195,6 +201,7 @@ export class SystemVirtualizationController {
         this.pendingMaterializationKeys = [];
         this.materializationCooldownFrames = 0;
         this.lastContentOffset = undefined;
+        this.fastScrollFrames = 0;
         this.scrollDirection = 0;
         this.systems.clear();
         this.expectedSystems.clear();
@@ -379,16 +386,34 @@ export class SystemVirtualizationController {
                 }
             }
         }
-        // Systems intersecting the real viewport are urgent: draw them now so cursor jumps and fast
-        // scrolling never expose a blank line. Overscan is speculative and is spread over later frames.
-        if (missingVisibleKeys.length > 0 && this.materializeSystems) {
-            this.materialize(missingVisibleKeys);
-        }
         if (contentOffset !== undefined) {
-            if (this.lastContentOffset !== undefined && contentOffset !== this.lastContentOffset) {
+            const now: number = performance.now();
+            const elapsedMs: number = now - this.lastContentOffsetAt;
+            const moved: boolean = this.lastContentOffset !== undefined && contentOffset !== this.lastContentOffset;
+            if (moved) {
                 this.scrollDirection = contentOffset < this.lastContentOffset ? 1 : -1;
+                const pixelsPerSecond: number = Math.abs(contentOffset - this.lastContentOffset) * 1000 / Math.max(1, elapsedMs);
+                const fastFrame: boolean = elapsedMs >= FAST_SCROLL_MIN_FRAME_GAP_MS && elapsedMs <= FAST_SCROLL_MAX_FRAME_GAP_MS &&
+                    pixelsPerSecond > viewport.height * FAST_SCROLL_VIEWPORTS_PER_SECOND;
+                this.fastScrollFrames = fastFrame ? this.fastScrollFrames + 1 : 0;
+            } else if (elapsedMs >= FAST_SCROLL_MIN_FRAME_GAP_MS) {
+                this.fastScrollFrames = 0;
             }
-            this.lastContentOffset = contentOffset;
+            if (moved || this.lastContentOffset === undefined || elapsedMs >= FAST_SCROLL_MIN_FRAME_GAP_MS) {
+                this.lastContentOffset = contentOffset;
+                this.lastContentOffsetAt = now;
+            }
+        }
+        const scrollingFast: boolean = this.fastScrollFrames >= FAST_SCROLL_MIN_FRAMES;
+        // Systems intersecting the real viewport are urgent: draw them now so cursor jumps never expose a
+        // blank line. During a fling they would leave the viewport before paying off, so they wait for the
+        // first frame the score slows down. Overscan is speculative and is spread over later frames.
+        if (missingVisibleKeys.length > 0 && this.materializeSystems) {
+            if (scrollingFast) {
+                this.scheduleUpdate();
+            } else {
+                this.materialize(missingVisibleKeys);
+            }
         }
         this.pendingMaterializationKeys = missingOverscan
             .filter(pending => !this.systems.has(pending.key))
