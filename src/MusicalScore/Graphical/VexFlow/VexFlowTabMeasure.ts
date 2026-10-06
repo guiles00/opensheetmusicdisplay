@@ -43,16 +43,54 @@ export class VexFlowTabMeasure extends VexFlowMeasure {
     public graphicalMeasureCreatedCalculations(): void {
         for (let idx: number = 0, len: number = this.staffEntries.length; idx < len; ++idx) {
             const graphicalStaffEntry: VexFlowStaffEntry = (this.staffEntries[idx] as VexFlowStaffEntry);
+            // grace notes are collected until their main note (the next non-grace entry) is reached,
+            //   like in VexFlowMeasure.graphicalMeasureCreatedCalculations() (#1721)
+            let graceGVoiceEntriesBefore: VexFlowVoiceEntry[] = [];
+            let graceSlur: boolean = false;
 
             // create vex flow Notes:
-            for (const gve of graphicalStaffEntry.graphicalVoiceEntries) {
-                if (gve.notes[0].sourceNote.isRest()) {
+            for (const gve of graphicalStaffEntry.graphicalVoiceEntries as VexFlowVoiceEntry[]) {
+                const isRest: boolean = gve.notes[0].sourceNote.isRest();
+                if (isRest) {
                     const ghostNotes: VF.GhostNote[] = VexFlowConverter.GhostNotes(gve.notes[0].sourceNote.Length);
-                    (gve as VexFlowVoiceEntry).vfStaveNote = ghostNotes[0];
-                    (gve as VexFlowVoiceEntry).vfGhostNotes = ghostNotes; // we actually need multiple ghost notes sometimes, see #1062 Sep. 23 2021 comment
+                    gve.vfStaveNote = ghostNotes[0];
+                    gve.vfGhostNotes = ghostNotes; // we actually need multiple ghost notes sometimes, see #1062 Sep. 23 2021 comment
                 } else {
-                    (gve as VexFlowVoiceEntry).vfStaveNote = VexFlowConverter.CreateTabNote(gve);
+                    gve.vfStaveNote = VexFlowConverter.CreateTabNote(gve); // a GraceTabNote (smaller fret number) for a grace note
                 }
+                if (gve.parentVoiceEntry.IsGrace) {
+                    if (gve.parentVoiceEntry.GraceAfterMainNote) {
+                        // grace notes after their main note (see InstrumentReader.attachGraceNotesAfterMainNote):
+                        //   drawn as their own tickables right of the main note (added to the vexflow voice below)
+                        continue;
+                    }
+                    graceGVoiceEntriesBefore.push(gve);
+                    graceSlur = graceSlur || gve.parentVoiceEntry.GraceSlur;
+                    continue;
+                }
+                if (graceGVoiceEntriesBefore.length > 0) {
+                    if (isRest) {
+                        // a GhostNote (rest in a tab measure) doesn't draw modifiers, so these grace notes are drawn as their own tickables
+                        for (const graceGve of graceGVoiceEntriesBefore) {
+                            graceGve.isStandAloneGrace = true; // added to the vexflow voice below
+                        }
+                    } else {
+                        // attach the grace notes to their main note in a Vexflow GraceNoteGroup, which formats and draws them
+                        //   left of the main note (as for classical notes). Otherwise they would never be drawn: they are not
+                        //   tickables of the vexflow voice (see below), which is why they were missing in tabs before (#1721).
+                        const vfGraceNotes: VF.TabNote[] = graceGVoiceEntriesBefore.map(
+                            (graceGve: VexFlowVoiceEntry) => graceGve.vfStaveNote as VF.TabNote);
+                        const graceNoteGroup: VF.GraceNoteGroup = new VF.GraceNoteGroup(vfGraceNotes as unknown as VF.GraceNote[], graceSlur);
+                        // note the argument order: (Tab)Note.addModifier(modifier, index), unlike StaveNote.addModifier(index, modifier)
+                        (gve.vfStaveNote as VF.TabNote).addModifier(graceNoteGroup, 0);
+                    }
+                    graceGVoiceEntriesBefore = [];
+                    graceSlur = false;
+                }
+            }
+            // remaining grace notes without a main note after them (e.g. at the end of the measure): stand-alone grace notes
+            for (const graceGve of graceGVoiceEntriesBefore) {
+                graceGve.isStandAloneGrace = true;
             }
         }
 
@@ -76,7 +114,8 @@ export class VexFlowTabMeasure extends VexFlowMeasure {
             // create vex flow voices and add tickables to it:
             for (const voiceEntry of restFilledEntries) {
                 if (voiceEntry.parentVoiceEntry) {
-                    if (voiceEntry.parentVoiceEntry.IsGrace && !voiceEntry.parentVoiceEntry.GraceAfterMainNote) {
+                    if (voiceEntry.parentVoiceEntry.IsGrace && !voiceEntry.parentVoiceEntry.GraceAfterMainNote &&
+                        !(voiceEntry as VexFlowVoiceEntry).isStandAloneGrace) {
                         continue;
                     }
                 }
@@ -131,6 +170,7 @@ export class VexFlowTabMeasure extends VexFlowMeasure {
                 }
             }
         }
+        this.createInStaffInstructionVoice();
         //this.createArticulations();
         //this.createOrnaments();
     }

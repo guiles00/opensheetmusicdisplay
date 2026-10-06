@@ -1,6 +1,9 @@
 #!/bin/bash
 # This script runs a visual regression test on all the images
-# generated from OSMD samples (npm run generate:current and npm run generate:blessed)
+# generated from OSMD samples
+#
+# NOTE: THIS SCRIPT IS MADE OBSOLETE BY THE MUCH FASTER visualRegression.mjs
+# SEE https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Testing
 #
 #   inspired by and adapted from Vexflow's visual regression tests.
 #
@@ -148,6 +151,7 @@ function diff_image() {
 
   # Calculate the difference metric and store the composite diff image.
   local hash=`compare -metric PHASH -highlight-color '#ff000050' $diff-b.png $diff-a.png $diff-diff.png 2>&1`
+  hash=$(echo "$hash" | awk '{print $1}') # extract first decimal token to handle ImageMagick macOS output e.g. "0.277653 (0.277653)"
   # convert hash to decimal if it was in scientific notation (e.g. 1.5e-2 -> 0.015)
   #   otherwise, syntax error will be returned for $hash > $THRESHOLD" | bc -l
   if [ ! $hash == 0 ] # don't change a "0" string

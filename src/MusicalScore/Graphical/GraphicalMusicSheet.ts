@@ -28,6 +28,7 @@ import { GraphicalVoiceEntry } from "./GraphicalVoiceEntry";
 import { GraphicalObject } from "./GraphicalObject";
 import { GraphicalLyricEntry } from "./GraphicalLyricEntry";
 import { GraphicalChordSymbolContainer } from "./GraphicalChordSymbolContainer";
+import { ClassType } from "../Interfaces/AClassHierarchyTrackable";
 // import { VexFlowMusicSheetDrawer } from "./VexFlow/VexFlowMusicSheetDrawer";
 // import { SvgVexFlowBackend } from "./VexFlow/SvgVexFlowBackend"; // causes build problem with npm start
 
@@ -57,6 +58,7 @@ export class GraphicalMusicSheet {
     private title: GraphicalLabel;
     private subtitle: GraphicalLabel;
     private composer: GraphicalLabel;
+    private firstPageCreditWords: GraphicalLabel[] = [];
     private lyricist: GraphicalLabel;
     private copyright: GraphicalLabel;
     private cursors: GraphicalLine[] = [];
@@ -125,6 +127,14 @@ export class GraphicalMusicSheet {
 
     public set Composer(value: GraphicalLabel) {
         this.composer = value;
+    }
+
+    public get FirstPageCreditWords(): GraphicalLabel[] {
+        return this.firstPageCreditWords;
+    }
+
+    public set FirstPageCreditWords(value: GraphicalLabel[]) {
+        this.firstPageCreditWords = value;
     }
 
     public get Lyricist(): GraphicalLabel {
@@ -552,17 +562,25 @@ export class GraphicalMusicSheet {
     /**
      * Generic method to find graphical objects on the sheet at a given location.
      * @param clickPosition Position in units where we are searching on the sheet
-     * @param className String representation of the class we want to find. Must extend GraphicalObject
+     * @param classOrName The class we want to find, e.g. GraphicalVoiceEntry. Must extend GraphicalObject.
+     *   Or its name, which is unreliable in minified builds (see AClassHierarchyTrackable.isInstanceOfClass()).
      * @param startSearchArea The area in units around our point to look for our graphical object, default 5
      * @param maxSearchArea The max area we want to search around our point
      * @param searchAreaIncrement The amount we expand our search area for each iteration that we don't find an object of the given type
      * @param shouldBeIncludedTest A callback that determines if the object should be included in our results- return false for no, true for yes
+     * @param distanceTo A callback that returns an object's (squared) distance to the click position, by which the nearest object is chosen.
+     *   By default, the distance of the object's position.
+     * @param page The page to search, or undefined for all pages (see pagesToSearch()).
      */
     private GetNearestGraphicalObject<T extends GraphicalObject>(
-        clickPosition: PointF2D, className: string = GraphicalObject.name,
+        clickPosition: PointF2D, classOrName: ClassType | string = GraphicalObject,
         startSearchArea: number = 5, maxSearchArea: number = 20, searchAreaIncrement: number = 5,
-        shouldBeIncludedTest: (objectToTest: T) => boolean = undefined): T {
+        shouldBeIncludedTest: (objectToTest: T) => boolean = undefined,
+        distanceTo: (objectToTest: T) => number = (objectToTest: T): number =>
+            this.CalculateDistance(objectToTest.PositionAndShape.AbsolutePosition, clickPosition),
+        page?: GraphicalMusicPage): T {
         const foundEntries: T[] = [];
+        const pages: GraphicalMusicPage[] = this.pagesToSearch(page);
         //Loop until we find some, or our search area is out of bounds
         while (foundEntries.length === 0 && startSearchArea <= maxSearchArea) {
             //Prepare search area
@@ -574,9 +592,9 @@ export class GraphicalMusicSheet {
             region.AbsolutePosition = new PointF2D(clickPosition.x, clickPosition.y);
             region.calculateAbsolutePosition();
             //Loop through music pages
-            for (let idx: number = 0, len: number = this.MusicPages.length; idx < len; ++idx) {
-                const graphicalMusicPage: GraphicalMusicPage = this.MusicPages[idx];
-                const entries: T[] = graphicalMusicPage.PositionAndShape.getObjectsInRegion<T>(region, false, className);
+            for (let idx: number = 0, len: number = pages.length; idx < len; ++idx) {
+                const graphicalMusicPage: GraphicalMusicPage = pages[idx];
+                const entries: T[] = graphicalMusicPage.PositionAndShape.getObjectsInRegion<T>(region, false, classOrName);
                 //If we have no entries on this page, skip to next (if exists)
                 if (!entries || entries.length === 0) {
                     continue;
@@ -601,8 +619,8 @@ export class GraphicalMusicSheet {
             if (closest === undefined) {
                 closest = object;
             } else {
-                const deltaNew: number = this.CalculateDistance(object.PositionAndShape.AbsolutePosition, clickPosition);
-                const deltaOld: number = this.CalculateDistance(closest.PositionAndShape.AbsolutePosition, clickPosition);
+                const deltaNew: number = distanceTo(object);
+                const deltaOld: number = distanceTo(closest);
                 if (deltaNew < deltaOld) {
                     closest = object;
                 }
@@ -614,14 +632,78 @@ export class GraphicalMusicSheet {
         return undefined;
     }
 
-    public GetNearestVoiceEntry(clickPosition: PointF2D): GraphicalVoiceEntry {
-        return this.GetNearestGraphicalObject<GraphicalVoiceEntry>(clickPosition, GraphicalVoiceEntry.name, 5, 20, 5,
-                                                                   (object: GraphicalVoiceEntry) =>
-                                                                        object.parentStaffEntry?.relInMeasureTimestamp !== undefined);
+    /**
+     * Returns the pages to search for the objects at a position: the given page, or all pages.
+     * Each page has its own coordinates: with a page format (EngravingRules.PageFormat), each page is drawn on its own canvas (SVG),
+     * from its top left (see GraphicalMusicPage.setMusicPageAbsolutePosition()). So a position, e.g. of a click on a page,
+     * is on every page, and the nearest object of all pages can be on another page, e.g. in the first system there.
+     */
+    private pagesToSearch(page: GraphicalMusicPage): GraphicalMusicPage[] {
+        return page ? [page] : this.MusicPages;
     }
 
-    public GetNearestNote(clickPosition: PointF2D, maxClickDist: PointF2D): GraphicalNote {
-        const nearestVoiceEntry: GraphicalVoiceEntry = this.GetNearestVoiceEntry(clickPosition);
+    /**
+     * Returns the voice entry with the note (head) nearest to the position, e.g. of a click.
+     * @param clickPosition The position in units
+     * @param ignoreGraceNotes Whether to skip voice entries of grace notes
+     * @param page The page to search, e.g. the one clicked on: each page has its own coordinates, so the position is on every page.
+     *   By default, all pages.
+     */
+    public GetNearestVoiceEntry(clickPosition: PointF2D, ignoreGraceNotes: boolean = false, page?: GraphicalMusicPage): GraphicalVoiceEntry {
+        function shouldBeIncluded(gve: GraphicalVoiceEntry): boolean {
+            if (!gve.parentStaffEntry?.relInMeasureTimestamp || GraphicalMusicSheet.isUndrawnTabRest(gve)) {
+                return false;
+            }
+            if (ignoreGraceNotes) {
+                let isGraceOnly: boolean = true;
+                for (const note of gve.notes) {
+                    if (!note.sourceNote.IsGraceNote) {
+                        isGraceOnly = false;
+                        break;
+                    }
+                }
+                if (isGraceOnly) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return this.GetNearestGraphicalObject<GraphicalVoiceEntry>(
+            clickPosition, GraphicalVoiceEntry, 5, 20, 5,
+            shouldBeIncluded, (gve: GraphicalVoiceEntry) => this.distanceToNearestNote(gve, clickPosition), page);
+    }
+
+    /**
+     * Whether the voice entry is a rest in a TAB staff, which isn't drawn (see VexFlowTabMeasure), so a click can't be on it.
+     * Its position can be where a fret number of the next note is drawn, and it could be found instead of that note.
+     */
+    private static isUndrawnTabRest(voiceEntry: GraphicalVoiceEntry): boolean {
+        return voiceEntry.parentStaffEntry?.parentMeasure?.isTabMeasure === true &&
+            voiceEntry.notes.every((note: GraphicalNote) => note.sourceNote.isRest());
+    }
+
+    /**
+     * Returns the (squared) distance of the voice entry's nearest note (head) to the position.
+     * The voice entry's own position is the top of its bounding box, e.g. the stem tip of an up-stem note,
+     * which is often farther from a click on its note head than another voice's note head next to it.
+     */
+    private distanceToNearestNote(voiceEntry: GraphicalVoiceEntry, position: PointF2D): number {
+        let distance: number = Infinity;
+        for (const note of voiceEntry.notes) {
+            distance = Math.min(distance, this.CalculateDistance(note.PositionAndShape.AbsolutePosition, position));
+        }
+        return distance;
+    }
+
+    /**
+     * Returns the note (head) nearest to the position, e.g. of a click: the nearest note of the nearest voice entry.
+     * @param clickPosition The position in units
+     * @param maxClickDist Unused
+     * @param page The page to search, e.g. the one clicked on: each page has its own coordinates, so the position is on every page.
+     *   By default, all pages.
+     */
+    public GetNearestNote(clickPosition: PointF2D, maxClickDist: PointF2D, page?: GraphicalMusicPage): GraphicalNote {
+        const nearestVoiceEntry: GraphicalVoiceEntry = this.GetNearestVoiceEntry(clickPosition, false, page);
         if (!nearestVoiceEntry) {
             return undefined;
         }
@@ -744,7 +826,13 @@ export class GraphicalMusicSheet {
         return undefined;
     }
 
-    public GetNearestStaffEntry(clickPosition: PointF2D): GraphicalStaffEntry {
+    /**
+     * Returns the staff entry nearest to the position, e.g. of a click.
+     * @param clickPosition The position in units
+     * @param page The page to search, e.g. the one clicked on: each page has its own coordinates, so the position is on every page.
+     *   By default, all pages.
+     */
+    public GetNearestStaffEntry(clickPosition: PointF2D, page?: GraphicalMusicPage): GraphicalStaffEntry {
         const initialSearchArea: number = 10;
         const foundEntries: GraphicalStaffEntry[] = [];
         // Prepare search area
@@ -755,11 +843,12 @@ export class GraphicalMusicSheet {
         region.BorderBottom = clickPosition.y + initialSearchArea;
         region.AbsolutePosition = new PointF2D(0, 0);
         // Search for StaffEntries in region
-        for (let idx: number = 0, len: number = this.MusicPages.length; idx < len; ++idx) {
-            const graphicalMusicPage: GraphicalMusicPage = this.MusicPages[idx];
+        const pages: GraphicalMusicPage[] = this.pagesToSearch(page);
+        for (let idx: number = 0, len: number = pages.length; idx < len; ++idx) {
+            const graphicalMusicPage: GraphicalMusicPage = pages[idx];
             const entries: GraphicalStaffEntry[] = graphicalMusicPage.PositionAndShape.
-                getObjectsInRegion<GraphicalStaffEntry>(region, false, GraphicalStaffEntry.name);
-                // note that "GraphicalStaffEntry" instead of GraphicalStaffEntry.name doesn't work with minified builds
+                getObjectsInRegion<GraphicalStaffEntry>(region, false, GraphicalStaffEntry);
+                // note: the class, not its name (GraphicalStaffEntry.name): minified builds can give other classes the same name
             if (!entries || entries.length === 0) {
                 continue;
             } else {
@@ -795,10 +884,14 @@ export class GraphicalMusicSheet {
     }
 
     /** Returns nearest object of type T near clickPosition.
-     * E.g. GetNearestObject<GraphicalMeasure>(pos, GraphicalMeasure.name) returns the nearest measure.
+     * E.g. GetNearestObject(pos, GraphicalMeasure) returns the nearest measure.
      * Note that there is also GetNearestStaffEntry(), which has a bit more specific code for staff entries.
+     * @param classOrName The class of the object, e.g. GraphicalMeasure. Or its name (e.g. GraphicalMeasure.name), which is unreliable
+     *   in minified builds: they can give other classes the same name, e.g. GraphicalNote (see AClassHierarchyTrackable.isInstanceOfClass()).
+     * @param page The page to search, e.g. the one clicked on: each page has its own coordinates, so the position is on every page.
+     *   By default, all pages.
      * */
-    public GetNearestObject<T extends GraphicalObject>(clickPosition: PointF2D, className: string): T {
+    public GetNearestObject<T extends GraphicalObject>(clickPosition: PointF2D, classOrName: ClassType<T> | string, page?: GraphicalMusicPage): T {
         const initialSearchArea: number = 10;
         const foundEntries: T[] = [];
         // Prepare search area
@@ -809,9 +902,10 @@ export class GraphicalMusicSheet {
         region.BorderBottom = clickPosition.y + initialSearchArea;
         region.AbsolutePosition = new PointF2D(0, 0);
         // Search for StaffEntries in region
-        for (let idx: number = 0, len: number = this.MusicPages.length; idx < len; ++idx) {
-            const graphicalMusicPage: GraphicalMusicPage = this.MusicPages[idx];
-            const entries: T[] = graphicalMusicPage.PositionAndShape.getObjectsInRegion<T>(region, false, className);
+        const pages: GraphicalMusicPage[] = this.pagesToSearch(page);
+        for (let idx: number = 0, len: number = pages.length; idx < len; ++idx) {
+            const graphicalMusicPage: GraphicalMusicPage = pages[idx];
+            const entries: T[] = graphicalMusicPage.PositionAndShape.getObjectsInRegion<T>(region, false, classOrName);
             if (!entries || entries.length === 0) {
                 continue;
             } else {
@@ -905,9 +999,11 @@ export class GraphicalMusicSheet {
     /**
      * Get visible staffentry for the container given by the index.
      * @param index
+     * @param onlyReliableXAnchors Whether to skip entries whose x position doesn't reliably reflect
+     * their timestamp (see {@link isReliableCursorXAnchor}), for cursor positioning by timestamp.
      * @returns {GraphicalStaffEntry}
      */
-    public getStaffEntry(index: number): GraphicalStaffEntry {
+    public getStaffEntry(index: number, onlyReliableXAnchors: boolean = false): GraphicalStaffEntry {
         const container: VerticalGraphicalStaffEntryContainer = this.VerticalGraphicalStaffEntryContainers[index];
         let staffEntry: GraphicalStaffEntry = undefined;
         try {
@@ -916,11 +1012,8 @@ export class GraphicalMusicSheet {
                 if (!entry || !entry.sourceStaffEntry.ParentStaff.isVisible()) {
                     continue;
                 }
-                // Skip entries that only have chord containers but no voice entries (notes).
-                // These are created for harmony offset positioning (commit 22bb9ed, v1.9.49)
-                // and don't have valid X positions for cursor/timing calculations.
-                // See: calculateXPositionFromTimestamp relies on staff entries with actual notes.
-                if (entry.graphicalVoiceEntries.length === 0 && entry.graphicalChordContainers?.length > 0) {
+                if ((entry.graphicalVoiceEntries.length === 0 && entry.graphicalChordContainers?.length > 0) ||
+                    (onlyReliableXAnchors && !this.isReliableCursorXAnchor(entry))) {
                     continue;
                 }
                 if (!staffEntry) {
@@ -936,6 +1029,41 @@ export class GraphicalMusicSheet {
         }
 
         return staffEntry;
+    }
+
+    /**
+     * Whether a staff entry's x position is a reliable anchor for mapping a timestamp to an
+     * x position (cursor positioning during playback, see {@link calculateXPositionFromTimestamp}).
+     * Two kinds of entries are excluded:
+     * - Entries without any graphical notes, e.g. staff entries only carrying a chord symbol
+     *   (MusicXML harmony). These are never positioned by the layout (their relative x stays at the
+     *   measure's left border regardless of their timestamp), so using them as anchors makes the
+     *   cursor jump backwards to the measure start (e.g. chord symbols above a centered whole rest).
+     * - Entries positioned outside their measure's horizontal bounds. These occur when a note was
+     *   never actually formatted/laid out (e.g. rests in some tablature edge cases) and carry
+     *   meaningless coordinates.
+     */
+    public isReliableCursorXAnchor(entry: GraphicalStaffEntry): boolean {
+        let hasGraphicalNotes: boolean = false;
+        for (const gve of entry.graphicalVoiceEntries) {
+            if (gve.notes.length > 0) {
+                hasGraphicalNotes = true;
+                break;
+            }
+        }
+        if (!hasGraphicalNotes) {
+            return false;
+        }
+        const relativeX: number = entry.PositionAndShape?.RelativePosition?.x;
+        if (relativeX === undefined) {
+            return false;
+        }
+        const measureWidth: number = entry.parentMeasure?.PositionAndShape?.Size?.width;
+        const positionMargin: number = 4; // units. generous margin for entries slightly outside the measure box
+        if (measureWidth > 0 && (relativeX < -positionMargin || relativeX > measureWidth + positionMargin)) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -976,12 +1104,13 @@ export class GraphicalMusicSheet {
         return -1;
     }
 
-    public findClosestLeftStaffEntry(fractionalIndex: number, searchOnlyVisibleEntries: boolean): GraphicalStaffEntry {
+    public findClosestLeftStaffEntry(fractionalIndex: number, searchOnlyVisibleEntries: boolean,
+                                     onlyReliableXAnchors: boolean = false): GraphicalStaffEntry {
         let foundEntry: GraphicalStaffEntry = undefined;
         let leftIndex: number = Math.floor(fractionalIndex);
         leftIndex = Math.min(this.VerticalGraphicalStaffEntryContainers.length - 1, leftIndex);
         for (let i: number = leftIndex; i >= 0; i--) {
-            foundEntry = this.getStaffEntry(i);
+            foundEntry = this.getStaffEntry(i, onlyReliableXAnchors);
             if (foundEntry) {
                 if (searchOnlyVisibleEntries) {
                     if (foundEntry.sourceStaffEntry.ParentStaff.isVisible()) {
@@ -995,11 +1124,12 @@ export class GraphicalMusicSheet {
         return undefined;
     }
 
-    public findClosestRightStaffEntry(fractionalIndex: number, returnOnlyVisibleEntries: boolean): GraphicalStaffEntry {
+    public findClosestRightStaffEntry(fractionalIndex: number, returnOnlyVisibleEntries: boolean,
+                                      onlyReliableXAnchors: boolean = false): GraphicalStaffEntry {
         let foundEntry: GraphicalStaffEntry = undefined;
         const rightIndex: number = Math.max(0, Math.ceil(fractionalIndex));
         for (let i: number = rightIndex; i < this.VerticalGraphicalStaffEntryContainers.length; i++) {
-            foundEntry = this.getStaffEntry(i);
+            foundEntry = this.getStaffEntry(i, onlyReliableXAnchors);
             if (foundEntry) {
                 if (returnOnlyVisibleEntries) {
                     if (foundEntry.sourceStaffEntry.ParentStaff.isVisible()) {
@@ -1028,8 +1158,10 @@ export class GraphicalMusicSheet {
     public calculateXPositionFromTimestamp(timeStamp: Fraction): [number, MusicSystem] {
         let currentMusicSystem: MusicSystem = undefined;
         const fractionalIndex: number = this.GetInterpolatedIndexInVerticalContainers(timeStamp);
-        const previousStaffEntry: GraphicalStaffEntry = this.findClosestLeftStaffEntry(fractionalIndex, true);
-        const nextStaffEntry: GraphicalStaffEntry = this.findClosestRightStaffEntry(fractionalIndex, true);
+        // only use staff entries whose x position actually reflects their timestamp as interpolation
+        //   anchors (skips e.g. never-positioned chord-symbol-only entries), see isReliableCursorXAnchor
+        const previousStaffEntry: GraphicalStaffEntry = this.findClosestLeftStaffEntry(fractionalIndex, true, true);
+        const nextStaffEntry: GraphicalStaffEntry = this.findClosestRightStaffEntry(fractionalIndex, true, true);
         const currentTimeStamp: number = timeStamp.RealValue;
         if (!previousStaffEntry && !nextStaffEntry) {
             return [0, undefined];
@@ -1072,7 +1204,11 @@ export class GraphicalMusicSheet {
                 }
             }
             fraction = Math.min(1, Math.max(0, fraction));
-            const interpolatedXPosition: number = previousStaffEntryPositionX + fraction * (nextStaffEntryPositionX - previousStaffEntryPositionX);
+            let limitX: number = nextStaffEntryPositionX;
+            // never interpolate to the left of the anchor entry (would move the cursor backwards over
+            //   time), e.g. when the measure's right border ends up left of a centered whole rest
+            limitX = Math.max(limitX, previousStaffEntryPositionX);
+            const interpolatedXPosition: number = previousStaffEntryPositionX + fraction * (limitX - previousStaffEntryPositionX);
             return [interpolatedXPosition, currentMusicSystem];
         } else {
             const nextSystemLeftBorderTimeStamp: number = nextStaffEntry.parentMeasure.parentSourceMeasure.AbsoluteTimestamp.RealValue;
@@ -1087,7 +1223,10 @@ export class GraphicalMusicSheet {
                 // previous (rendered) system; clamps to its right border once the timestamp reaches the next system
                 currentMusicSystem = previousStaffEntryMusicSystem;
                 const previousStaffEntryPositionX: number = previousStaffEntry.PositionAndShape.AbsolutePosition.x;
-                const previousSystemRightBorderX: number = currentMusicSystem.GetRightBorderAbsoluteXPosition();
+                // never interpolate to the left of the anchor entry (would move the cursor backwards over
+                //   time), e.g. when a centered whole rest sits right of the system's computed right border
+                const previousSystemRightBorderX: number =
+                    Math.max(currentMusicSystem.GetRightBorderAbsoluteXPosition(), previousStaffEntryPositionX);
                 fraction = (currentTimeStamp - previousStaffEntry.getAbsoluteTimestamp().RealValue) /
                     (nextSystemLeftBorderTimeStamp - previousStaffEntry.getAbsoluteTimestamp().RealValue);
                 fraction = Math.min(1, Math.max(0, fraction));
@@ -1095,8 +1234,10 @@ export class GraphicalMusicSheet {
             } else if (nextStaffEntryMusicSystem.StaffLines[0]) {
                 // next (rendered) system
                 currentMusicSystem = nextStaffEntryMusicSystem;
-                const nextStaffEntryPositionX: number = nextStaffEntry.PositionAndShape.AbsolutePosition.x;
                 const nextSystemLeftBorderX: number = currentMusicSystem.GetLeftBorderAbsoluteXPosition();
+                // same anchor clamp as above, for interpolating from the system's left border
+                const nextStaffEntryPositionX: number =
+                    Math.max(nextStaffEntry.PositionAndShape.AbsolutePosition.x, nextSystemLeftBorderX);
                 fraction = (currentTimeStamp - nextSystemLeftBorderTimeStamp) /
                     (nextStaffEntry.getAbsoluteTimestamp().RealValue - nextSystemLeftBorderTimeStamp);
                 fraction = Math.min(1, Math.max(0, fraction));

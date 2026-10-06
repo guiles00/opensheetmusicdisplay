@@ -72,6 +72,14 @@ export class VoiceEntry {
     public get ParentSourceStaffEntry(): SourceStaffEntry {
         return this.parentSourceStaffEntry;
     }
+    /** Moves the voice entry to another staff entry, e.g. grace notes after their main note into the main note's staff entry
+     * (InstrumentReader.attachGraceNotesAfterMainNote). Also re-parents its notes. Doesn't change the staff entries' VoiceEntries lists. */
+    public set ParentSourceStaffEntry(value: SourceStaffEntry) {
+        this.parentSourceStaffEntry = value;
+        for (const note of this.notes) {
+            note.ParentStaffEntry = value;
+        }
+    }
     public get ParentVoice(): Voice {
         return this.parentVoice;
     }

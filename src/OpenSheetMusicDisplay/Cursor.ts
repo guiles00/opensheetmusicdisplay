@@ -38,6 +38,8 @@ export class Cursor {
 
     const curs: HTMLElement = document.createElement("div");
     curs.id = this.cursorElementId;
+    curs.setAttribute("aria-hidden", "true");
+    curs.draggable = false; // dragging on the cursor doesn't drag a copy of its image
     curs.style.position = "absolute";
     curs.style.pointerEvents = "none";
     curs.classList.add("osmd-cursor");
@@ -146,7 +148,16 @@ export class Cursor {
     if (this.hidden || this.hidden === undefined || this.hidden === null) {
       return;
     }
+    if (this.graphic.VerticalGraphicalStaffEntryContainers.length === 0) {
+      return;
+    }
     this.updateCurrentPage(); // attach cursor to new page DOM if necessary
+    if (!this.getPageElement(this.currentPageNumber)) {
+      // the page isn't drawn, e.g. after drawUpToPageNumber, so the cursor can't be shown there.
+      //   It still moves (e.g. for NotesUnderCursor()), and is shown again on a drawn page.
+      this.cursorElement.style.display = "none";
+      return;
+    }
 
     // this.graphic?.Cursors?.length = 0;
     const iterator: MusicPartManagerIterator = this.iterator;
@@ -195,12 +206,21 @@ export class Cursor {
     } else {
       // get all staff entries inside the current voice entry
       const gseArr: VexFlowStaffEntry[] = voiceEntries.map(ve => this.getStaffEntryFromVoiceEntry(ve));
+      // only use entries whose x position reliably reflects their timestamp: e.g. never-formatted
+      //   tablature rests carry garbage coordinates that would put the cursor far off-canvas
+      const reliableGseArr: VexFlowStaffEntry[] = gseArr.filter(entry => entry && this.graphic.isReliableCursorXAnchor(entry));
       // sort them by x position and take the leftmost entry
       const gse: VexFlowStaffEntry =
-            gseArr.sort((a, b) => a?.PositionAndShape?.AbsolutePosition?.x <= b?.PositionAndShape?.AbsolutePosition?.x ? -1 : 1 )[0];
+            reliableGseArr.sort((a, b) => a?.PositionAndShape?.AbsolutePosition?.x <= b?.PositionAndShape?.AbsolutePosition?.x ? -1 : 1 )[0];
       if (gse) {
         x = gse.PositionAndShape.AbsolutePosition.x;
         musicSystem = gse.parentMeasure.ParentMusicSystem;
+      } else if (gseArr.length > 0) {
+        // all entries at this position have unreliable positions: interpolate between the closest
+        //   reliable entries instead of jumping to a garbage x position
+        const [timestampX, timestampSystem] = this.graphic.calculateXPositionFromTimestamp(iterator.currentTimeStamp);
+        x = timestampX;
+        musicSystem = timestampSystem;
       }
 
       // debug: change color of notes under cursor (needs re-render)
@@ -319,12 +339,14 @@ export class Cursor {
 
     cursorElement.style.width = `${newWidth}px`;
     const heightAttribute: number = this.cursorOptions.type === CursorType.ShortThinTopLeft ? 1.5 : height;
-    cursorElement.style.height = `${heightAttribute * 10.0 * this.openSheetMusicDisplay.zoom}px`;
+    if (cursorElement.style.getPropertyPriority("height") !== "important") {
+      cursorElement.style.height = `${heightAttribute * 10.0 * this.openSheetMusicDisplay.zoom}px`;
+    }
 
-    if (this.cursorOptionsRendered !== this.cursorOptions) {
+    const rendered: CursorOptions = this.cursorOptionsRendered;
+    if (!rendered || rendered.type !== this.cursorOptions.type ||
+        rendered.color !== this.cursorOptions.color || rendered.alpha !== this.cursorOptions.alpha) {
       this.updateStyle(newWidth, this.cursorOptions);
-      // only update style (creating new cursor element) if options changed.
-      //   For width, it seems to be enough to update cursorElement.width, see osmd#1519
     }
   }
 
@@ -417,17 +439,37 @@ export class Cursor {
         //   so we do need to use gt, not gte here.
         const newPageNumber: number = page.PageNumber;
         if (newPageNumber !== this.currentPageNumber) {
-          this.container.removeChild(this.cursorElement);
-          this.container = document.getElementById("osmdCanvasPage" + newPageNumber);
-          this.container.appendChild(this.cursorElement);
-          // TODO maybe store this.pageCurrentlyAttachedTo, though right now it isn't necessary
-          // alternative to remove/append:
-          // this.openSheetMusicDisplay.enableOrDisableCursor(true);
+          this.attachToPage(newPageNumber);
         }
         return this.currentPageNumber = newPageNumber;
       }
     }
     return 1;
+  }
+
+  /** Moves the cursor element to the element of the page with the given number (see getPageElement()), if the page is drawn.
+   *  A page that isn't drawn, e.g. after drawUpToPageNumber, has no element: the cursor element stays where it is,
+   *  and update() hides it.
+   */
+  private attachToPage(pageNumber: number): void {
+    const pageElement: HTMLElement = this.getPageElement(pageNumber);
+    if (!pageElement) {
+      return;
+    }
+    this.container.removeChild(this.cursorElement);
+    this.container = pageElement;
+    this.container.appendChild(this.cursorElement);
+    // TODO maybe store this.pageCurrentlyAttachedTo, though right now it isn't necessary
+    // alternative to remove/append:
+    // this.openSheetMusicDisplay.enableOrDisableCursor(true);
+  }
+
+  /** Returns the element (div) of this OSMD instance's page with the given number, which the cursor is attached to on that page.
+   *  Found through the instance's backends, not by the element's id "osmdCanvasPage" + page number: every OSMD instance
+   *  on a web page gives its pages the same ids, so document.getElementById() can return another instance's page.
+   */
+  private getPageElement(pageNumber: number): HTMLElement {
+    return this.openSheetMusicDisplay.Drawer.Backends[pageNumber - 1]?.getInnerElement();
   }
 
   public get SkipInvisibleNotes(): boolean {

@@ -99,6 +99,14 @@ export class Note {
      * because Note.Notehead is undefined for normal Noteheads to save space and time.
      */
     private noteheadColorXml: string;
+    /** Whether the accidental given in XML is in parentheses (<accidental parentheses="yes">),
+     * usually a cautionary (courtesy) accidental. Drawn in parentheses, see VexFlowConverter.StaveNote().
+     */
+    public AccidentalParenthesesXml: boolean;
+    /** Whether the accidental given in XML is in brackets (<accidental bracket="yes">),
+     * e.g. an editorial accidental. Drawn in parentheses, see VexFlowConverter.StaveNote().
+     */
+    public AccidentalBracketXml: boolean;
     /** Color of the notehead currently set/desired for next render. RGB Hexadecimal, like #00FF00.
      * Needs to be stored here and not in Note.Notehead,
      * because Note.Notehead is undefined for normal Noteheads to save space and time.
@@ -132,6 +140,9 @@ export class Note {
     }
     public get ParentStaffEntry(): SourceStaffEntry {
         return this.parentStaffEntry;
+    }
+    public set ParentStaffEntry(value: SourceStaffEntry) {
+        this.parentStaffEntry = value;
     }
     public get ParentStaff(): Staff {
         return this.parentStaffEntry.ParentStaff;
@@ -219,17 +230,28 @@ export class Note {
     }
     /** Whether this note's own notehead is hidden (e.g. print-object="no" or notehead "none") but there is a
      * visible note on the same staff line in another voice at the same staff entry - i.e. a unison whose visible
-     * notehead this note shares. Used to keep such a note's beam and stem rendered (the stem still emanates from
-     * the shared notehead and joins the beam) instead of dropping it. E.g. an eighth note sharing a notehead with
-     * a dotted quarter in Beethoven's Moonlight Sonata 1st mvt. m.37 (test_unison_notehead_moonlight_sonata_measure37). */
+     * notehead this note shares. Used to render such a note like a visible one instead of dropping it: its beam
+     * and stem (the stem still emanates from the shared notehead and joins the beam), the notehead Vexflow lays
+     * out beside the visible one wherever the two heads can't be merged into one column
+     * (VexFlowVoiceEntry.drawnAsSharedUnisonNote), and its place in a tuplet, whose number spans it either way.
+     * E.g. an eighth note sharing a notehead with a dotted quarter in Beethoven's Moonlight Sonata 1st mvt. m.37
+     * (test_unison_notehead_moonlight_sonata_measure37), or the first note of a triplet sharing a half note's
+     * notehead in Debussy's Arabesque no. 1 m.3 (test_unison_notehead_tuplet_arabesque_measure3). */
     public sharesNoteheadWithVisibleUnisonNote(): boolean {
+        return this.visibleUnisonNoteSharingNotehead() !== undefined;
+    }
+
+    /** The visible note in another voice whose notehead this note shares (see
+     * {@link sharesNoteheadWithVisibleUnisonNote}), or undefined if this note's own notehead is visible or
+     * there is no such note. */
+    public visibleUnisonNoteSharingNotehead(): Note {
         if (this.printObject && this.notehead?.Shape !== NoteHeadShape.NONE) {
-            return false; // this note's own notehead is visible, nothing to share
+            return undefined; // this note's own notehead is visible, nothing to share
         }
         // Grace notes are ornaments before a main note, not a note sounding simultaneously - they share their
         // staff entry with that main note, so don't treat that as a unison (would falsely keep their stem).
         if (!this.pitch || !this.parentStaffEntry || this.voiceEntry?.IsGrace) {
-            return false;
+            return undefined;
         }
         for (const otherVoiceEntry of this.parentStaffEntry.VoiceEntries) {
             if (otherVoiceEntry === this.voiceEntry || otherVoiceEntry.IsGrace) {
@@ -239,11 +261,11 @@ export class Note {
                 if (otherNote.printObject && otherNote.notehead?.Shape !== NoteHeadShape.NONE && otherNote.pitch &&
                     otherNote.pitch.FundamentalNote === this.pitch.FundamentalNote &&
                     otherNote.pitch.Octave === this.pitch.Octave) {
-                    return true; // visible note on the same staff line in another voice
+                    return otherNote; // visible note on the same staff line in another voice
                 }
             }
         }
-        return false;
+        return undefined;
     }
     public get Arpeggio(): Arpeggio {
         return this.arpeggio;

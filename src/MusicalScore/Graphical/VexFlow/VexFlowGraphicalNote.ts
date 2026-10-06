@@ -2,9 +2,10 @@ import Vex from "vexflow";
 import VF = Vex.Flow;
 import { ColoringOptions, GraphicalNote, VisibilityOptions } from "../GraphicalNote";
 import {Note} from "../../VoiceData/Note";
+import { Glissando } from "../../VoiceData/Glissando";
 import {ClefInstruction} from "../../VoiceData/Instructions/ClefInstruction";
 import {VexFlowConverter} from "./VexFlowConverter";
-import {Pitch} from "../../../Common/DataObjects/Pitch";
+import {AccidentalEnum, Pitch} from "../../../Common/DataObjects/Pitch";
 import {Fraction} from "../../../Common/DataObjects/Fraction";
 import {OctaveEnum, OctaveShift} from "../../VoiceData/Expressions/ContinuousExpressions/OctaveShift";
 import { GraphicalVoiceEntry } from "../GraphicalVoiceEntry";
@@ -65,6 +66,14 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         const drawPitch: Pitch = this.drawPitch(pitch);
         // recalculate the pitch, and this time don't ignore the accidental:
         this.vfpitch = VexFlowConverter.pitch(drawPitch, this.sourceNote.isRest(), this.clef, this.sourceNote.Notehead);
+        // sharp-sharp and double-sharp are both DOUBLESHARP, natural-sharp is a SHARP and natural-flat a FLAT:
+        //   only AccidentalXml tells them apart, and drawPitch doesn't keep it.
+        //   VexFlowConverter.StaveNote() draws each of them as two accidentals, like "###".
+        if ((pitch.Accidental === AccidentalEnum.DOUBLESHARP && pitch.AccidentalXml === "sharp-sharp") ||
+            (pitch.Accidental === AccidentalEnum.SHARP && pitch.AccidentalXml === "natural-sharp") ||
+            (pitch.Accidental === AccidentalEnum.FLAT && pitch.AccidentalXml === "natural-flat")) {
+            this.vfpitch[1] = pitch.AccidentalXml;
+        }
         this.DrawnAccidental = drawPitch.Accidental;
         //}
     }
@@ -123,7 +132,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     }
 
     /** Toggle visibility of the note, making it and its stem and beams invisible for `false`.
-     * By default, this will also hide the note's slurs and ties (see visibilityOptions).
+     * By default, this will also hide the note's slurs, ties and glissandi, e.g. slides (see visibilityOptions).
      * (This only works with the default SVG backend, not with the Canvas backend/renderer)
      * To get a GraphicalNote from a Note, use osmd.EngravingRules.GNote(note).
      */
@@ -133,6 +142,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             return;
         }
         const applyToBeams: boolean = visibilityOptions.applyToBeams ?? true; // default option if not given
+        const applyToGlissandi: boolean = visibilityOptions.applyToGlissandi ?? true;
         const applyToLedgerLines: boolean = visibilityOptions.applyToLedgerLines ?? true;
         const applyToNotehead: boolean = visibilityOptions.applyToNotehead ?? true;
         const applyToSlurs: boolean = visibilityOptions.applyToSlurs ?? true;
@@ -167,6 +177,11 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         if (applyToSlurs) {
             for (const slur of this.getSlurSVGs()) {
                 slur?.setAttribute(visibilityAttribute, visibilityString);
+            }
+        }
+        if (applyToGlissandi) {
+            for (const glissando of this.getGlissandoSVGs()) {
+                glissando?.setAttribute(visibilityAttribute, visibilityString);
             }
         }
 
@@ -327,10 +342,20 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return ledgerSVGs;
     }
 
-    /** Gets the SVG path elements of the note's tie curves. */
+    /** Gets the SVG groups of the ties starting at this note, each with the tie's curve.
+     *  A tie across a system break has a group in each system (see VexFlowMeasure.addStaveTie()). */
     public getTieSVGs(): HTMLElement[] {
         const tieSVGs: HTMLElement[] = [];
-        const ties: HTMLElement[] = this.getSVGElementsById(`vf-${this.getSVGId()}-tie`);
+        const svgId: string = this.getSVGId();
+        if (!svgId) {
+            return tieSVGs; // no Vexflow note, e.g. in a multi-rest measure
+        }
+        const ties: HTMLElement[] = this.parentVoiceEntry.parentStaffEntry.GraphicalTies
+            .filter((tie) => (tie.StartNote as VexFlowGraphicalNote)?.getSVGId() === svgId)
+            .flatMap((tie) => tie.SVGElements);
+        if (ties.length === 0) {
+            ties.push(...this.getSVGElementsById(`vf-${svgId}-tie`));
+        }
         // TODO multiple ties have the same id sometimes, DOM elements are not supposed to have the same id, this is invalid HTML. But it works.
         for (const tie of ties) {
             tieSVGs.push(tie);
@@ -430,7 +455,35 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return this.getSVGElementsById(id)[0];
     }
 
+    /** Gets the SVG groups of the glissandi and slides starting at this note: each with the line, and in a TAB staff the label "sl.".
+     *  A glissando across a system break has a group in each system (see VexFlowMusicSheetDrawer.drawGlissando()). */
+    public getGlissandoSVGs(): HTMLElement[] {
+        const svgId: string = this.getSVGId();
+        const glissandi: Glissando[] = this.parentVoiceEntry.notes.map(note => note.sourceNote.NoteGlissando)
+            .filter(glissando => glissando &&
+                (this.rules.GNote(glissando.StartNote) as VexFlowGraphicalNote)?.getSVGId() === svgId);
+        if (!svgId || glissandi.length === 0) {
+            return [];
+        }
+        const id: string = `vf-${svgId}-glissando`;
+        const elements: Set<HTMLElement> = new Set(document.querySelectorAll<HTMLElement>(`[id='${id}']`));
+        for (const element of this.getSVGElementsById(id)) {
+            elements.add(element);
+        }
+        for (const glissando of glissandi) {
+            const endNote: VexFlowGraphicalNote = this.rules.GNote(glissando.EndNote) as VexFlowGraphicalNote;
+            for (const element of endNote?.getSVGElementsById(id) ?? []) {
+                elements.add(element);
+            }
+        }
+        return Array.from(elements);
+    }
+
+    /** Gets the SVG elements of the note heads, e.g. the paths of a chord's heads, or the fret numbers of a TAB note (and its chord). */
     public getNoteheadSVGs(): HTMLElement[] {
+        if (this.isTabNote) {
+            return this.getTabNoteSVGs().frets;
+        }
         const vfNote: HTMLElement = this.getVFNoteSVG();
         const noteheads: HTMLElement[] = [];
         if (vfNote?.children?.length) {
@@ -471,7 +524,12 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return undefined;
     }
 
+    /** Gets the SVG elements of the note's modifiers: the groups of a stave note's modifiers (e.g. accidentals),
+     *  or the shapes of a TAB note's modifiers (e.g. a bend's curve, arrow and label). */
     public getModifierSVGs(): HTMLElement[] {
+        if (this.isTabNote) {
+            return this.getTabNoteSVGs().modifiers;
+        }
         const stavenote: SVGGElement = this.getSVGGElement();
         const modifierSVGs: HTMLElement[] = [];
         if (!stavenote?.children) {
@@ -485,7 +543,45 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return modifierSVGs;
     }
 
+    /** Whether the note is drawn in a TAB staff, as a fret number (a Vexflow TabNote, or a GraceTabNote for a grace note). */
+    private get isTabNote(): boolean {
+        return this.vfnote?.[0] instanceof VF.TabNote;
+    }
+
+    /**
+     * Gets the SVG elements a TAB note is drawn with (see TabNote.draw() in the VexFlowPatch): first a background rect and a
+     * fret number (a text, or a path for an x notehead) for each position of its chord, then its modifiers, e.g. a bend.
+     * A grace note is drawn with its main note, in its own group, which is skipped.
+     */
+    private getTabNoteSVGs(): { frets: HTMLElement[], modifiers: HTMLElement[] } {
+        const children: HTMLElement[] = Array.from(this.getSVGGElement()?.children ?? []) as HTMLElement[];
+        const positionCount: number = (this.vfnote[0] as any).positions?.length ?? 0;
+        const frets: HTMLElement[] = [];
+        for (let i: number = 0; i < positionCount; i++) {
+            if (children[2 * i]?.tagName === "rect" && children[2 * i + 1]) {
+                frets.push(children[2 * i + 1]);
+            }
+        }
+        const modifiers: HTMLElement[] = children.slice(2 * positionCount).filter((child: HTMLElement) => child.tagName !== "g");
+        return { frets, modifiers };
+    }
+
+    /** Colors the paths of a group, e.g. of a note head, or a single shape, e.g. of a TAB note or a glissando: its fill,
+     *  or its stroke if it's only a line, like the curve of a bend or the line of a slide. */
+    private static colorShapes(element: Element, color: string): void {
+        if (element.children.length > 0) {
+            for (const path of element.children) {
+                path.setAttribute("fill", color);
+            }
+        } else if (element.getAttribute("fill") === "none") {
+            element.setAttribute("stroke", color);
+        } else {
+            element.setAttribute("fill", color);
+        }
+    }
+
     /** Change the color of a note (without re-rendering). See ColoringOptions for options like applyToBeams etc.
+     * For a TAB note, the note heads are its fret numbers, and its modifiers e.g. bends.
      * This requires the SVG backend (default, instead of canvas backend).
      */
     public setColor(color: string, coloringOptions: ColoringOptions = {}): void {
@@ -495,6 +591,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
         const applyToBeams: boolean = coloringOptions.applyToBeams ?? false; // default if option not given
         const applyToFlag: boolean = coloringOptions.applyToFlag ?? true;
+        const applyToGlissandi: boolean = coloringOptions.applyToGlissandi ?? false;
         const applyToLedgerLines: boolean = coloringOptions.applyToLedgerLines ?? false;
         const applyToLyrics: boolean = coloringOptions.applyToLyrics ?? false;
         const applyToModifiers: boolean = coloringOptions.applyToModifiers ?? true;
@@ -520,6 +617,16 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             if (flag) {
                 for (const flagPath of flag.children) {
                     flagPath.setAttribute("fill", color);
+                }
+            }
+        }
+
+        if (applyToGlissandi) {
+            for (const glissando of this.getGlissandoSVGs()) {
+                // each shape of the group: the lines need their stroke colored, the label "sl." in a TAB staff its fill.
+                //   (the line in a standard staff is in a group of its own, see SvgVexFlowBackend.renderLine())
+                for (const shape of glissando.querySelectorAll("path, text")) {
+                    VexFlowGraphicalNote.colorShapes(shape, color);
                 }
             }
         }
@@ -566,18 +673,14 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         if (applyToModifiers) { // e.g. accidentals
             const modifiers: HTMLElement[] = this.getModifierSVGs();
             for (const modifier of modifiers) {
-                for (const path of modifier.children) {
-                    path.setAttribute("fill", color);
-                }
+                VexFlowGraphicalNote.colorShapes(modifier, color);
             }
         }
 
         if (applyToNoteheads) {
             const noteheads: HTMLElement[] = this.getNoteheadSVGs();
             for (const notehead of noteheads) {
-                for (const noteheadPath of notehead.children) {
-                    noteheadPath.setAttribute("fill", color);
-                }
+                VexFlowGraphicalNote.colorShapes(notehead, color);
             }
         }
 
