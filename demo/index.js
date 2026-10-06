@@ -3,9 +3,12 @@ import { BrailleConverter } from '../src/Plugins/Braille/BrailleConverter';
 import { BackendType } from '../src/OpenSheetMusicDisplay/OSMDOptions';
 import { countLedgerLineNotesForTransposition } from '../src/OpenSheetMusicDisplay/ledgerLineTranspositionCount';
 import * as jsPDF  from '../node_modules/jspdf/dist/jspdf.es.min';
-import * as svg2pdf from '../node_modules/svg2pdf.js/dist/svg2pdf.umd.min';
+// the ES build, not the UMD build: since svg2pdf.js 2.8 declares "type": "module", webpack bundles the UMD build as an ES module,
+//   whose UMD wrapper then looks for a global jspdf and crashes. The ES build imports "jspdf", which resolves to the same jspdf.es.min.js.
+import * as svg2pdf from '../node_modules/svg2pdf.js/dist/svg2pdf.es.min';
 import { TransposeCalculator } from '../src/Plugins/Transpose/TransposeCalculator';
 import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
+import { IntervalTransposeCalculator } from '../src/Plugins/Transpose/IntervalTransposeCalculator';
 
 /*jslint browser:true */
 (function () {
@@ -75,9 +78,9 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
             "OSMD Function Test - String number collisions": "test_string_number_collisions.musicxml",
             "OSMD Function Test - Repeat Stave Connectors": "OSMD_function_Test_Repeat.musicxml",
             "OSMD Function Test - Voice Alignment": "OSMD_Function_Test_Voice_Alignment.musicxml",
+            "OSMD Function Test - Part Name print-object=no": "test_part_name_print_object_no.musicxml",
             "Schubert, F. - An Die Musik": "Schubert_An_die_Musik.xml",
             "Actor, L. - Prelude (Large Sample, loading time)": "ActorPreludeSample.xml",
-            "Actor, L. - Prelude (Large, No Print Part Names)": "ActorPreludeSample_PartName.xml",
             "Anonymous - Saltarello": "Saltarello.mxl",
             "Debussy, C. - Mandoline": "Debussy_Mandoline.xml",
             "Levasseur, F. - Parlez Mois": "Parlez-moi.mxl",
@@ -132,6 +135,7 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
         transpose,
         transposeBtn,
         toggleSelectionRangeBtn,
+        transposeIntervalCheckbox,
         versionDiv,
         measureFromInput,
         measureToInput,
@@ -323,6 +327,7 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
         playMidiBtn = document.getElementById("play-midi-btn");
         transpose = document.getElementById('transpose');
         transposeBtn = document.getElementById('transpose-btn');
+        transposeIntervalCheckbox = document.getElementById('transpose-interval-checkbox');
         versionDiv = document.getElementById('versionDiv');
         measureFromInput = document.getElementById('measureFrom');
         measureToInput = document.getElementById('measureTo');
@@ -1043,6 +1048,9 @@ import { Sequencer, WorkletSynthesizer } from 'spessasynth_lib';
         if(transposeBtn && transpose){
             transposeBtn.onclick = function(){
                 var transposeValue = parseInt(transpose.value);
+                // "Keep note spelling": transpose by interval, so e.g. A# in C major stays G# (not Ab) when transposing to Bb major
+                openSheetMusicDisplay.TransposeCalculator = transposeIntervalCheckbox && transposeIntervalCheckbox.checked ?
+                    new IntervalTransposeCalculator() : new TransposeCalculator();
                 openSheetMusicDisplay.Sheet.Transpose = transposeValue;
                 openSheetMusicDisplay.updateGraphic();
                 rerender();

@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { TestUtils } from "../../Util/TestUtils";
+import JSZip from "jszip";
 import { IOSMDOptions } from "../../../src/OpenSheetMusicDisplay/OSMDOptions";
 import { DrawingParametersEnum } from "../../../src/Common/Enums/DrawingParametersEnum";
 import { Cursor } from "../../../src/OpenSheetMusicDisplay/Cursor";
@@ -157,6 +158,78 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         );
     });
 
+    it("updates and restores the fork's BPM-driven tempo label without replacing the SVG", async () => {
+        const div: HTMLElement = TestUtils.getDivElement(document);
+        try {
+            const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(div, {
+                autoResize: false, drawDynamicTempoLabel: true, dynamicTempoLabelBpm: 120,
+            });
+            await osmd.load(TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml"));
+            osmd.render();
+            const svg: SVGElement = div.querySelector("svg");
+            const label: Element = div.querySelector(".vf-dynamic-tempo text");
+            expect(label?.textContent).to.equal("Allegro");
+            osmd.setDynamicTempoLabel(50);
+            expect(label.textContent).to.equal("Lento");
+            expect(div.querySelector("svg")).to.equal(svg);
+            osmd.render();
+            expect(div.querySelector(".vf-dynamic-tempo text")?.textContent).to.equal("Lento");
+        } finally {
+            div.remove();
+        }
+    });
+
+    it("keeps and clears the fork's committed range selection after rendering again", async () => {
+        const div: HTMLElement = TestUtils.getDivElement(document);
+        div.style.width = "800px";
+        try {
+            const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(div, {
+                autoResize: false, rangeSelection: {enabled: true, options: {grayOutStrategy: "mask"}},
+            });
+            await osmd.load(TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml"));
+            osmd.render();
+            osmd.setRangeSelection(new Fraction(1, 4), new Fraction(1, 1));
+            expect(osmd.getRangeSelection()?.normalizedStart.timestampReal).to.equal(0.25);
+            expect(osmd.getRangeSelection()?.normalizedEnd.timestampReal).to.equal(1);
+            osmd.render();
+            expect(osmd.getRangeSelection()?.normalizedStart.timestampReal).to.equal(0.25);
+            expect(osmd.getRangeSelection()?.normalizedEnd.timestampReal).to.equal(1);
+            osmd.clearRangeSelection();
+            expect(osmd.getRangeSelection()).to.equal(undefined);
+        } finally {
+            div.remove();
+        }
+    });
+
+    it("aligns a bass-staff harmony offset with the simultaneous treble note", async () => {
+        const xml: string = `<?xml version="1.0" encoding="UTF-8"?><score-partwise version="3.1"><part-list><score-part id="P1"><part-name>Piano</part-name>
+            </score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions>
+            <time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line>
+            </clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>
+            <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
+            <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
+            <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
+            <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><staff>1</staff></note>
+            <backup><duration>4</duration></backup><harmony><root><root-step>C</root-step></root><kind>major</kind><offset>2</offset>
+            <staff>2</staff></harmony><note><rest measure="yes"/><duration>4</duration><voice>2</voice><type>whole</type><staff>2</staff></note>
+            </measure></part></score-partwise>`;
+        const div: HTMLElement = TestUtils.getDivElement(document);
+        try {
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
+            await osmd.load(xml);
+            osmd.render();
+            const treble: GraphicalStaffEntry = osmd.GraphicSheet.MeasureList[0][0].staffEntries.find(
+                entry => entry.relInMeasureTimestamp.RealValue === 0.5);
+            const bass: GraphicalStaffEntry = osmd.GraphicSheet.MeasureList[0][1].staffEntries.find(
+                entry => entry.relInMeasureTimestamp.RealValue === 0.5);
+            expect(bass?.graphicalChordContainers.length).to.equal(1);
+            expect(bass.graphicalChordContainers[0].PositionAndShape.RelativePosition.x).to.be.closeTo(
+                treble.PositionAndShape.RelativePosition.x + osmd.EngravingRules.ChordSymbolRelativeXOffset, 0.001);
+        } finally {
+            div.remove();
+        }
+    });
+
     it("updates one staff entry's fingerings without replacing the rendered sheet", async () => {
         const score: Document = TestUtils.getScore("test_fingering_Simple_Chords_Treble_Bass.musicxml");
         const div: HTMLElement = TestUtils.getDivElement(document);
@@ -259,20 +332,21 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         expect(startBox.RelativePosition.y + startBox.BorderBottom).to.be.lessThan(slurYAt(startBox.RelativePosition.x) - 0.3);
     });
 
-    it.skip("Timeout from server", (done: Mocha.Done) => {
-        // TODO this test times out from time to time, even with osmd.loadUrlTimeout set to 5000.
-        //   the test is unreliable, which makes it hard to test.
-        //   also, it's better not to use OSMD to fetch one's score anyways.
-        //   also, the timeout adds unnecessary time to the testing suite.
-        const score: string = "https://httpstat.us/408";
+    it("load missing file by URL", (done: Mocha.Done) => {
+        // e.g. a typo in the path: the karma server answers 404, like any web server
+        const url: string = "base/test/data/does_not_exist.musicxml";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(score).then(
+        opensheetmusicdisplay.load(url).then(
             (_: {}) => {
-                done(new Error("Unexpected response from server"));
+                done(new Error("A missing file appears to be loaded correctly"));
             },
             (exc: Error) => {
-                done();
+                if (exc.message.match(/404/)) {
+                    done();
+                } else {
+                    done(new Error("Unexpected error: " + exc.message));
+                }
             }
         );
     });
@@ -290,23 +364,33 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         );
     });
 
-    // skip: this test is unnecessary and creates traffic (to google)
-    it.skip("load something invalid by URL", (done: Mocha.Done) => {
-        const url: string = "https://www.google.com";
-        const div: HTMLElement = TestUtils.getDivElement(document);
-        const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(url).then(
-            (_: {}) => {
-                done(new Error("Invalid URL appears to be loaded correctly"));
-            },
-            (exc: Error) => {
-                if (exc.message.toLowerCase().match(/opensheetmusicdisplay.*invalid/)) {
-                    done();
-                } else {
-                    done(new Error("Unexpected error: " + exc.message));
-                }
-            }
-        );
+    it("uses tempTitle as the title of a score without one, also for a Blob, an MXL file or a URL", async () => {
+        const xml: string = `<?xml version="1.0" encoding="UTF-8"?>
+            <score-partwise version="4.0">
+                <part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+                <part id="P1"><measure number="1">
+                    <attributes><divisions>1</divisions></attributes>
+                    <note><rest/><duration>4</duration><type>whole</type></note>
+                </measure></part>
+            </score-partwise>`;
+        const zip: JSZip = new JSZip();
+        zip.file("META-INF/container.xml", "<container><rootfiles><rootfile full-path='score.xml'/></rootfiles></container>");
+        zip.file("score.xml", xml);
+        const contents: [string, string | Blob][] = [
+            ["XML string", xml],
+            ["XML string with byte order mark", "\uf7ef\uf7bb\uf7bf" + xml],
+            ["XML Blob", new Blob([xml])],
+            ["MXL string", await zip.generateAsync({type: "binarystring"})],
+            ["MXL Blob", await zip.generateAsync({type: "blob"})],
+            ["URL", URL.createObjectURL(new Blob([xml]))],
+        ];
+        const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+        const titles: string[] = [];
+        for (const [name, content] of contents) {
+            await opensheetmusicdisplay.load(content, "Evening Song");
+            titles.push(`${name}: ${opensheetmusicdisplay.Sheet.TitleString}`);
+        }
+        expect(titles, titles.join("; ")).to.deep.equal(contents.map(([name]) => `${name}: Evening Song`));
     });
 
     it("load invalid URL", (done: Mocha.Done) => {
@@ -391,6 +475,34 @@ describe("OpenSheetMusicDisplay Main Export", () => {
             },
             done
         ).catch(done);
+    });
+
+    /**
+     * The page is drawn inside the container's border and padding. It was as wide as the container including them
+     * (offsetWidth), so it stuck out of the container by their width.
+     */
+    it("lays out and draws the page as wide as the container's content box, inside its padding and border", async () => {
+        for (const incremental of [false, true]) {
+            const div: HTMLElement = TestUtils.getDivElement(document);
+            div.style.width = "500px";
+            div.style.padding = "0 10px 0 30px";
+            div.style.border = "5px solid";
+            try {
+                const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
+                await osmd.load(TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml"));
+                if (incremental) {
+                    osmd.renderNext();
+                    osmd.renderRemaining();
+                } else {
+                    osmd.render();
+                }
+                const renderName: string = incremental ? "renderNext()" : "render()";
+                expect(osmd.Sheet.pageWidth, `page width in units, ${renderName}`).to.equal(50);
+                expect(div.querySelector("svg").getBoundingClientRect().width, `drawn width in pixels, ${renderName}`).to.equal(500);
+            } finally {
+                div.remove();
+            }
+        }
     });
 
     describe("cursor with hidden instrument", () => {

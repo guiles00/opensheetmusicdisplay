@@ -530,7 +530,7 @@ export class BrailleMeasureRenderer {
         for (const note of notes) {
             if (note.NoteSlurs) {
                 for (const slur of note.NoteSlurs) {
-                    if (slur.StartNote === note) {
+                    if (slur.StartNote === note && slur.EndNote) { // no end note: see Slur.HasUnattachedEnd
                         state.activeSlurs.add(slur);
                     }
                 }
@@ -753,7 +753,7 @@ export class BrailleMeasureRenderer {
         for (const note of notes) {
             if (note.NoteSlurs) {
                 for (const slur of note.NoteSlurs) {
-                    if (slur.StartNote === note) {
+                    if (slur.StartNote === note && slur.EndNote) { // no end note: see Slur.HasUnattachedEnd
                         const slurLength: number = state.slurLengths.get(slur) ?? 0;
                         if (slurLength > 4) {
                             parts.push(BRAILLE_BRACKET_SLUR_OPEN);
@@ -805,7 +805,7 @@ export class BrailleMeasureRenderer {
             // Instantaneous dynamics (p, f, mf, etc.)
             if (multiExpr.InstantaneousDynamic) {
                 const dynResult: BrailleExpressionResult =
-                    renderDynamic(multiExpr.InstantaneousDynamic.DynEnum);
+                    renderDynamic(multiExpr.InstantaneousDynamic.DynEnum, multiExpr.InstantaneousDynamic.DynamicExpression);
                 if (dynResult.braille) {
                     events.push({
                         timestamp: timestamp,

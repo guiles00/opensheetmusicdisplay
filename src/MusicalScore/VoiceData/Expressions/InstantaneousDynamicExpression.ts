@@ -27,6 +27,8 @@ export class InstantaneousDynamicExpression extends AbstractExpression {
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.sfz,    0.5);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.sffz,   0.5);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.fz,     0.5);
+        InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.sfzp,   0.5);
+        InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.pf,      92.0 / 127.0); // poco forte: between mf and f
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.mp,      60 / 127.0);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.p,       28.0 / 127.0);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.pp,      12.0 / 127.0);
@@ -34,13 +36,15 @@ export class InstantaneousDynamicExpression extends AbstractExpression {
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.pppp,    7.0 / 127.0);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.ppppp,    5.0 / 127.0);
         InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.pppppp,   4.0 / 127.0);
+        InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.setValue(DynamicEnum.n,        0.0); // niente
     }
 
     constructor(dynamicExpression: string, soundDynamics: number, placement: PlacementEnum, staffNumber: number,
-                measure: SourceMeasure) {
+                measure: SourceMeasure, dynamicEnum?: DynamicEnum) {
         super(placement);
         this.parentMeasure = measure;
-        this.dynamicEnum = DynamicEnum[dynamicExpression.toLowerCase()];
+        this.dynamicExpression = dynamicExpression;
+        this.dynamicEnum = dynamicEnum ?? InstantaneousDynamicExpression.dynamicEnumFromText(dynamicExpression);
         this.soundDynamic = soundDynamics;
         this.staffNumber = staffNumber;
     }
@@ -48,6 +52,7 @@ export class InstantaneousDynamicExpression extends AbstractExpression {
     public static dynamicToRelativeVolumeDict: Dictionary<DynamicEnum, number> = new Dictionary<DynamicEnum, number>();
 
     private multiExpression: MultiExpression;
+    private dynamicExpression: string;
     private dynamicEnum: DynamicEnum;
     private soundDynamic: number;
     private staffNumber: number;
@@ -59,6 +64,13 @@ export class InstantaneousDynamicExpression extends AbstractExpression {
     }
     public set ParentMultiExpression(value: MultiExpression) {
         this.multiExpression = value;
+    }
+    /** The marking as written, e.g. "sfmp" for <sf/><mp/>, "ffz" or "cresc." from <other-dynamics>. This is what gets rendered. */
+    public get DynamicExpression(): string {
+        return this.dynamicExpression;
+    }
+    public set DynamicExpression(value: string) {
+        this.dynamicExpression = value;
     }
     public get DynEnum(): DynamicEnum {
         return this.dynamicEnum;
@@ -103,11 +115,48 @@ export class InstantaneousDynamicExpression extends AbstractExpression {
         return InstantaneousDynamicExpression.isStringInStringList(InstantaneousDynamicExpression.listInstantaneousDynamics, inputString);
     }
 
+    /**
+     * The playback dynamic (DynEnum) for the text of a marking, or undefined if the text doesn't denote one:
+     * - the whole text, if it is a known dynamic: "sfz", "MF", "pf"
+     * - for a plain sequence of dynamics letters, the longest known dynamic it starts with, i.e. the first symbol of a
+     *   combined marking: "sfmp" -> sf, "ffz" -> ff (also how Finale, Sibelius and MuseScore write these in <other-dynamics>)
+     * - for a text, its leading dynamic word: "f con fuoco" -> f, "p dolce" -> p. A dynamic letter that merely starts a
+     *   longer word doesn't count ("fine", "forte", "pesante"), nor does a text not starting with a dynamic ("cresc.", "più f").
+     */
+    public static dynamicEnumFromText(text: string): DynamicEnum {
+        const normalized: string = text?.trim().toLowerCase();
+        if (!normalized) {
+            return undefined;
+        }
+        if (!InstantaneousDynamicExpression.knownDynamicNames) {
+            // built lazily: DynamicEnum is declared after this class in the module, so it isn't available while the
+            //   class's statics are initialized (same reason staticConstructor() is called at the end of the module)
+            InstantaneousDynamicExpression.knownDynamicNames = Object.keys(DynamicEnum)
+                .filter((key: string): boolean => isNaN(Number(key)) && key !== "other")
+                .sort((a: string, b: string): number => b.length - a.length); // longest first: "sff" before "sf" before... ("s" is none)
+        }
+        const leadingDynamic: string = InstantaneousDynamicExpression.knownDynamicNames.find(
+            (name: string): boolean => normalized.startsWith(name));
+        if (!leadingDynamic) {
+            return undefined;
+        }
+        const rest: string = normalized.substring(leadingDynamic.length);
+        const isSymbolSequence: boolean = /^[pfmsrzn]+$/.test(normalized);
+        if (rest.length === 0 || isSymbolSequence || !/^[a-zà-ÿ]/.test(rest)) {
+            return DynamicEnum[leadingDynamic];
+        }
+        return undefined; // the dynamic letter(s) just start a longer word, e.g. "fine"
+    }
+
+    /** All known dynamics (the DynamicEnum names except "other"), longest first. See dynamicEnumFromText(). */
+    private static knownDynamicNames: string[];
+
     //private static weight: number;
     private static listInstantaneousDynamics: string[] =  [
         "pppppp", "ppppp", "pppp", "ppp", "pp", "p",
         "ffffff", "fffff", "ffff", "fff", "ff", "f",
         "mf", "mp", "sf", "sff", "sp", "spp", "fp", "rf", "rfz", "sfz", "sffz", "fz",
+        "pf", "sfzp", "n", // MusicXML 4.0
     ];
 
     //public getInstantaneousDynamicSymbol(expressionSymbolEnum:DynamicExpressionSymbolEnum): FontInfo.MusicFontSymbol {
@@ -187,7 +236,14 @@ export enum DynamicEnum {
     sfz = 21,
     sffz = 22,
     fz = 23,
-    other = 24
+    other = 24,
+    // added in MusicXML 4.0:
+    /** poco forte */
+    pf = 25,
+    /** sforzando-piano */
+    sfzp = 26,
+    /** niente */
+    n = 27
 }
 
 InstantaneousDynamicExpression.staticConstructor();

@@ -31,6 +31,11 @@ module.exports = function (config) {
                 watched: false,
                 served: true
             }, {
+                pattern: 'test/data/test_UTF16*.musicxml',
+                included: false,
+                watched: false,
+                served: true
+            }, {
                 pattern: 'test/data/*.xml',
                 included: true
             }, {

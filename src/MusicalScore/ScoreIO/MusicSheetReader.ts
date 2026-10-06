@@ -11,7 +11,10 @@ import {IXmlAttribute} from "../../Common/FileIO/Xml";
 import {RhythmInstruction} from "../VoiceData/Instructions/RhythmInstruction";
 import {RhythmSymbolEnum} from "../VoiceData/Instructions/RhythmInstruction";
 import {SourceStaffEntry} from "../VoiceData/SourceStaffEntry";
+import {Staff} from "../VoiceData/Staff";
 import {VoiceEntry} from "../VoiceData/VoiceEntry";
+import {LyricsEntry} from "../VoiceData/Lyrics/LyricsEntry";
+import {LyricWord} from "../VoiceData/Lyrics/LyricsWord";
 import {InstrumentalGroup} from "../InstrumentalGroup";
 import {SubInstrument} from "../SubInstrument";
 import {MidiInstrument} from "../VoiceData/Instructions/ClefInstruction";
@@ -141,6 +144,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             throw new MusicSheetReadingException("Undefined root element");
         }
         this.pushSheetLabels(root, path);
+        this.readLyricLanguages(root);
         const partlistNode: IXmlElement = root.element("part-list");
         if (!partlistNode) {
             throw new MusicSheetReadingException("Undefined partListNode");
@@ -184,6 +188,10 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                 this.checkIfRhythmInstructionsAreSetAndEqual(instrumentReaders);
                 this.checkSourceMeasureForNullEntries();
                 sourceMeasureCounter = this.setSourceMeasureDuration(instrumentReaders, sourceMeasureCounter);
+                for (const instrumentReader of instrumentReaders) {
+                    instrumentReader.finalizeKeyInstructions();
+                }
+                this.checkSourceMeasureForNullEntries(); // a measure-end key may have left an empty entry
                 //MusicSheetReader.doCalculationsAfterDurationHasBeenSet(instrumentReaders);
                 // commented out because it's only open tie deletion, which works incorrectly, see #1530
                 this.currentMeasure.AbsoluteTimestamp = this.currentFraction.clone();
@@ -201,6 +209,9 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         }
         this.musicSheet.checkForInstrumentWithNoVoice();
         this.musicSheet.fillStaffList();
+        if (this.rules.RelinkLyricWordsAcrossVoices) {
+            this.relinkLyricWordsAcrossVoices(this.musicSheet);
+        }
         //this.musicSheet.DefaultStartTempoInBpm = this.musicSheet.SheetPlaybackSetting.BeatsPerMinute;
         for (let idx: number = 0, len: number = this.afterSheetReadingModules.length; idx < len; ++idx) {
          const afterSheetReadingModule: IAfterSheetReadingModule = this.afterSheetReadingModules[idx];
@@ -211,6 +222,135 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         this.musicSheet.userStartTempoInBPM = this.musicSheet.userStartTempoInBPM || this.musicSheet.DefaultStartTempoInBpm;
 
         return this.musicSheet;
+    }
+
+    /**
+     * Re-links lyric word chains whose syllables are split across voices of the same
+     * staff (e.g. the soprano holds a note while the alto carries the next syllable
+     * of the word). Each voice is parsed by its own LyricsReader, so a "begin" syllable
+     * in one voice never meets its "end" in another and no dash is drawn between them.
+     * Only verses that contain broken chains are rebuilt (in timestamp order); verses
+     * with well-formed words — including voices carrying genuinely different lyrics —
+     * are left untouched. Each staff has its own lyrics lines, so words are never linked
+     * across staves, e.g. a tenor's words in the lower staff of a two-staff choir part.
+     */
+    private relinkLyricWordsAcrossVoices(musicSheet: MusicSheet): void {
+        interface ITimedLyricsEntry { timestamp: number, voiceId: number, entry: LyricsEntry }
+        const groups: Map<Staff, Map<string, ITimedLyricsEntry[]>> = new Map();
+        for (const measure of musicSheet.SourceMeasures) {
+            for (const container of measure.VerticalSourceStaffEntryContainers) {
+                for (const staffEntry of container.StaffEntries) {
+                    if (!staffEntry) {
+                        continue;
+                    }
+                    const staff: Staff = staffEntry.ParentStaff;
+                    for (const voiceEntry of staffEntry.VoiceEntries) {
+                        voiceEntry.LyricsEntries.forEach((verseNumber: string, lyricsEntry: LyricsEntry) => {
+                            let verses: Map<string, ITimedLyricsEntry[]> = groups.get(staff);
+                            if (!verses) {
+                                verses = new Map();
+                                groups.set(staff, verses);
+                            }
+                            let list: ITimedLyricsEntry[] = verses.get(verseNumber);
+                            if (!list) {
+                                list = [];
+                                verses.set(verseNumber, list);
+                            }
+                            list.push({
+                                timestamp: staffEntry.AbsoluteTimestamp.RealValue,
+                                voiceId: voiceEntry.ParentVoice.VoiceId,
+                                entry: lyricsEntry
+                            });
+                        });
+                    }
+                }
+            }
+        }
+        groups.forEach((verses: Map<string, ITimedLyricsEntry[]>) => {
+            verses.forEach((list: ITimedLyricsEntry[]) => {
+                if (!this.hasBrokenLyricWordChains(list)) {
+                    return;
+                }
+                list.sort((a: ITimedLyricsEntry, b: ITimedLyricsEntry) =>
+                    (a.timestamp - b.timestamp) || (a.voiceId - b.voiceId));
+                let openWord: LyricWord = undefined;
+                let previousTimestamp: number = Number.NEGATIVE_INFINITY;
+                for (const timed of list) {
+                    const entry: LyricsEntry = timed.entry;
+                    if (timed.timestamp === previousTimestamp) {
+                        // simultaneous duplicate (same syllable carried by both voices):
+                        // keep it rendered, but out of any word chain
+                        entry.Word = undefined;
+                        continue;
+                    }
+                    previousTimestamp = timed.timestamp;
+                    switch (entry.syllabic) {
+                        case "begin":
+                            openWord = new LyricWord();
+                            entry.Word = openWord;
+                            entry.SyllableIndex = 0;
+                            openWord.Syllables.push(entry);
+                            break;
+                        case "middle":
+                        case "end":
+                        case "single": // like LyricsReader: a "single" syllable ends a word that is still open, e.g. "grau-en" with "en" single
+                            if (openWord) {
+                                entry.Word = openWord;
+                                entry.SyllableIndex = openWord.Syllables.length;
+                                openWord.Syllables.push(entry);
+                                if (entry.syllabic !== "middle") {
+                                    openWord = undefined;
+                                }
+                            } else {
+                                entry.Word = undefined;
+                            }
+                            break;
+                        default: // unknown
+                            entry.Word = undefined;
+                            openWord = undefined;
+                            break;
+                    }
+                }
+            });
+        });
+    }
+
+    /** A verse needs re-linking when a non-single syllable has no word (orphan)
+     *  or a word chain does not start with "begin" and finish with "end" (or "single",
+     *  with which LyricsReader also ends a word).
+     *
+     *  Only verses whose syllables are in more than one voice qualify:
+     *  a verse sung by one voice can't have a word split across voices. */
+    private hasBrokenLyricWordChains(list: { voiceId: number, entry: LyricsEntry }[]): boolean {
+        const voices: Set<number> = new Set();
+        for (const timed of list) {
+            voices.add(timed.voiceId);
+        }
+        if (voices.size < 2) {
+            return false;
+        }
+        const words: Set<LyricWord> = new Set();
+        for (const timed of list) {
+            const entry: LyricsEntry = timed.entry;
+            if (!entry.Word) {
+                if (entry.syllabic === "begin" || entry.syllabic === "middle" || entry.syllabic === "end") {
+                    return true;
+                }
+            } else {
+                words.add(entry.Word);
+            }
+        }
+        let broken: boolean = false;
+        words.forEach((word: LyricWord) => {
+            const syllables: LyricsEntry[] = word.Syllables;
+            const lastSyllabic: string = syllables[syllables.length - 1].syllabic;
+            if (syllables.length < 2 ||
+                syllables[0].syllabic !== "begin" ||
+                lastSyllabic !== "end" && lastSyllabic !== "single") { // LyricsReader also ends a word at a "single" syllable
+                broken = true;
+            }
+        });
+        return broken;
     }
 
     private initializeReading(partList: IXmlElement[], partInst: IXmlElement[], instrumentReaders: InstrumentReader[]): void {
@@ -497,7 +637,8 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                         }
                     }
                 }
-                if (sourceStaffEntry !== undefined && sourceStaffEntry.VoiceEntries.length === 0 && sourceStaffEntry.ChordContainers.length === 0) {
+                if (sourceStaffEntry !== undefined && sourceStaffEntry.VoiceEntries.length === 0 &&
+                    sourceStaffEntry.ChordContainers.length === 0 && sourceStaffEntry.Instructions.length === 0) {
                     this.currentMeasure.VerticalSourceStaffEntryContainers[i].StaffEntries[j] = undefined;
                 }
             }
@@ -526,23 +667,124 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         this.readTitle(root);
         this.readCopyright(root);
         try {
-            if (!this.musicSheet.Title || !this.musicSheet.Composer || !this.musicSheet.Subtitle) {
+            // With page layout, an untyped credit's position identifies its role: retain the default reader.
+            if (this.rules.ReadFirstPageCreditWords && this.computeSystemYCoordinates(root) === 0) {
+                this.readFirstPageCreditWords(root);
+            } else if (!this.musicSheet.Title || !this.musicSheet.Composer || !this.musicSheet.Subtitle) {
                 this.readTitleAndComposerFromCredits(root); // this can also throw an error
             }
         } catch (ex) {
-            log.info("MusicSheetReader.pushSheetLabels", "readTitleAndComposerFromCredits", ex);
+            log.info("MusicSheetReader.pushSheetLabels", "read credits", ex);
         }
         try {
             if (!this.musicSheet.Title) {
-                const barI: number = Math.max(
-                    0, filePath.lastIndexOf("/"), filePath.lastIndexOf("\\")
-                );
-                const filename: string = filePath.substr(barI);
-                const filenameSplits: string[] = filename.split(".", 1);
-                this.musicSheet.Title = new Label(filenameSplits[0]);
+                // filePath is the tempTitle of OpenSheetMusicDisplay.load(): a title ("Untitled Score" by default), used as it is,
+                //   or the name or path of a MusicXML file, whose file name is used without its extension
+                let title: string = filePath;
+                const extension: RegExpMatchArray = filePath.match(/\.(xml|musicxml|mxl)$/i);
+                if (extension) {
+                    title = filePath.substring(Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\")) + 1, extension.index);
+                }
+                this.musicSheet.Title = new Label(title);
             }
         } catch (ex) {
             log.info("MusicSheetReader.pushSheetLabels", "read title from file name", ex);
+        }
+    }
+
+    /** Reads the default languages of the lyrics, <defaults><lyric-language xml:lang="..."> (MusicSheet.LyricLanguages). */
+    private readLyricLanguages(root: IXmlElement): void {
+        for (const lyricLanguage of root.element("defaults")?.elements("lyric-language") ?? []) {
+            const language: string = lyricLanguage.attribute("xml:lang")?.value;
+            if (language) {
+                this.musicSheet.LyricLanguages.push({
+                    number: lyricLanguage.attribute("number")?.value,
+                    name: lyricLanguage.attribute("name")?.value,
+                    language: language,
+                });
+            }
+        }
+    }
+
+    /** Reads first-page credits without inferring a role from position or alignment. */
+    private readFirstPageCreditWords(root: IXmlElement): void {
+        const titles: string[] = [];
+        const subtitles: string[] = [];
+        const composers: string[] = [];
+        const lyricists: string[] = [];
+        const independent: Label[] = [];
+        const languages: Map<string, string> = new Map(); // the xml:lang of the first credit of each type
+        for (const credit of root.elements("credit")) {
+            if (Number(credit.attribute("page")?.value ?? "1") !== 1) {
+                continue;
+            }
+            const [creditType, creditText, creditLanguage] = this.getCreditTypeTextAndLanguage(credit);
+            const text: string = this.trimString(creditText ?? "");
+            if (!text) {
+                continue;
+            }
+            if (creditType === "page number") {
+                continue;
+            }
+            if (creditType === "rights") {
+                if (!this.musicSheet.Copyright) {
+                    this.musicSheet.Copyright = new Label(text, TextAlignmentEnum.CenterBottom, undefined, true);
+                    this.musicSheet.Copyright.language = creditLanguage;
+                }
+                continue;
+            }
+            if (!languages.has(creditType)) {
+                languages.set(creditType, creditLanguage);
+            }
+            switch (creditType) {
+                case "title":
+                    titles.push(text);
+                    continue;
+                case "subtitle":
+                    subtitles.push(text);
+                    continue;
+                case "composer":
+                    composers.push(text);
+                    continue;
+                case "lyricist":
+                    lyricists.push(text);
+                    continue;
+                default:
+                    break;
+            }
+            const words: IXmlElement = credit.element("credit-words");
+            const alignment: string = words?.attribute("halign")?.value ?? words?.attribute("justify")?.value;
+            const labelAlignment: TextAlignmentEnum = alignment === "right" ? TextAlignmentEnum.RightTop :
+                alignment === "center" ? TextAlignmentEnum.CenterTop : TextAlignmentEnum.LeftTop;
+            const label: Label = new Label(text, labelAlignment);
+            label.language = creditLanguage;
+            independent.push(label);
+        }
+        if (titles.length > 0) {
+            this.musicSheet.Title = new Label(titles.join("\n"));
+            this.musicSheet.Title.language = languages.get("title");
+        }
+        if (subtitles.length > 0) {
+            this.musicSheet.Subtitle = new Label(subtitles.join("\n"));
+            this.musicSheet.Subtitle.language = languages.get("subtitle");
+        }
+        if (composers.length > 0) {
+            this.musicSheet.Composer = new Label(composers.join("\n"));
+            this.musicSheet.Composer.language = languages.get("composer");
+        }
+        if (lyricists.length > 0) {
+            this.musicSheet.Lyricist = new Label(lyricists.join("\n"));
+            this.musicSheet.Lyricist.language = languages.get("lyricist");
+        }
+        // Guitar Pro, for example, repeats the title and composer in untyped credits: do not draw them twice.
+        const normalize: (text: string) => string = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+        const drawnLines: string[] = [this.musicSheet.Title, this.musicSheet.Subtitle, this.musicSheet.Composer, this.musicSheet.Lyricist]
+            .filter((label: Label): boolean => label !== undefined)
+            .flatMap((label: Label): string[] => label.text.split("\n").map(normalize));
+        for (const label of independent) {
+            if (!label.text.split("\n").every((line: string): boolean => drawnLines.includes(normalize(line)))) {
+                this.musicSheet.FirstPageCreditWords.push(label);
+            }
         }
     }
 
@@ -597,23 +839,46 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             this.readTitleAndComposerFromCreditsLegacy(root);
             return;
         }
+        // 0 if the score has no <defaults>, no <top-system-distance>, or no <page-height> in <page-layout>
         const systemYCoordinates: number = this.computeSystemYCoordinates(root);
-        if (systemYCoordinates === 0) {
-            return;
-        }
         // let largestTitleCreditSize: number = 1;
         let finalTitle: string = undefined;
         // let largestCreditYInfo: number = 0;
         let finalSubtitle: string = undefined;
         // let possibleTitle: string = undefined;
         let finalComposer: string = undefined;
+        // the xml:lang of the (first) credit of the title, subtitle and composer
+        let titleLanguage: string = undefined;
+        let subtitleLanguage: string = undefined;
+        let composerLanguage: string = undefined;
         const creditElements: IXmlElement[] = root.elements("credit");
         for (let idx: number = 0, len: number = creditElements.length; idx < len; ++idx) {
             const credit: IXmlElement = creditElements[idx];
-            if (!credit.attribute("page")) {
-                return;
-            }
-            if (credit.attribute("page").value === "1") {
+            const page: string = credit.attribute("page")?.value ?? "1"; // optional in MusicXML, 1 by default
+            if (page === "1") {
+                if (systemYCoordinates === 0) {
+                    // without page layout, the position of a credit doesn't tell its role: read it by its <credit-type>
+                    const [creditType, creditText, creditLanguage] = this.getCreditTypeTextAndLanguage(credit);
+                    if (creditType === "title") {
+                        if (!finalTitle) {
+                            finalTitle = creditText;
+                            titleLanguage = creditLanguage;
+                        }
+                    } else if (creditType === "subtitle") {
+                        subtitleLanguage = finalSubtitle ? subtitleLanguage : creditLanguage;
+                        finalSubtitle = finalSubtitle ? finalSubtitle + "\n" + creditText : creditText;
+                    } else if (creditType === "composer") {
+                        composerLanguage = finalComposer ? composerLanguage : creditLanguage;
+                        finalComposer = finalComposer ? finalComposer + "\n" + creditText : creditText;
+                    } else if (creditType === "lyricist" && !this.musicSheet.Lyricist) {
+                        this.musicSheet.Lyricist = new Label(this.trimString(creditText));
+                        this.musicSheet.Lyricist.language = creditLanguage;
+                    } else if (creditType === "rights" && !this.musicSheet.Copyright) {
+                        this.musicSheet.Copyright = new Label(this.trimString(creditText), TextAlignmentEnum.CenterBottom, undefined, true);
+                        this.musicSheet.Copyright.language = creditLanguage;
+                    }
+                    continue;
+                }
                 let creditChildren: IXmlElement[] = undefined;
                 if (credit) {
                     let isSubtitle: boolean = false;
@@ -632,6 +897,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                         if (creditChildValue === "Copyright ©") {
                             continue; // this seems to be a MuseScore default, useless
                         }
+                        const creditChildLanguage: string = creditChild.attribute("xml:lang")?.value;
                         const creditJustify: string = creditChild.attribute("justify")?.value;
                         if (creditJustify === "right") {
                             isComposer = true;
@@ -656,6 +922,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                                 //     }
                                 // }
                                 finalTitle = creditChildValue;
+                                titleLanguage = creditChildLanguage;
                                 // if (!finalTitle) {
                                 //     finalTitle = creditChild.value;
                                 // } else {
@@ -664,6 +931,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                             } else if (isComposer || creditJustify === "right") {
                                 if (!finalComposer) {
                                     finalComposer = creditChildValue;
+                                    composerLanguage = creditChildLanguage;
                                 } else {
                                     finalComposer += "\n" + creditChildValue;
                                 }
@@ -681,11 +949,13 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                                     finalSubtitle += "\n" + creditChildValue;
                                 } else {
                                     finalSubtitle = creditChildValue;
+                                    subtitleLanguage = creditChildLanguage;
                                 }
                                 // }
                             } else if (creditJustify === "left") {
                                 if (!this.musicSheet.Lyricist) {
                                     this.musicSheet.Lyricist = new Label(creditChildValue);
+                                    this.musicSheet.Lyricist.language = creditChildLanguage;
                                 }
                                 break;
                             }
@@ -696,9 +966,11 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         }
         if (!this.musicSheet.Title && finalTitle) {
             this.musicSheet.Title = new Label(this.trimString(finalTitle));
+            this.musicSheet.Title.language = titleLanguage;
         }
         if (!this.musicSheet.Subtitle && finalSubtitle) {
             this.musicSheet.Subtitle = new Label(this.trimString(finalSubtitle));
+            this.musicSheet.Subtitle.language = subtitleLanguage;
         }
         if (finalComposer) {
             let overrideSheetComposer: boolean = false;
@@ -716,8 +988,21 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             }
             if (overrideSheetComposer) {
                 this.musicSheet.Composer = new Label(this.trimString(finalComposer));
+                this.musicSheet.Composer.language = composerLanguage;
             }
         }
+    }
+
+    /** Joins <credit-words> in document order and returns a type only for exactly one <credit-type>, and the xml:lang of
+     * the first <credit-words>. Untyped and multi-type credits retain their text without a type.
+     */
+    private getCreditTypeTextAndLanguage(credit: IXmlElement): [string?, string?, string?] {
+        const creditTypes: IXmlElement[] = credit.elements("credit-type");
+        const text: string = credit.elements("credit-words").map((words: IXmlElement) => words.value).join("");
+        if (!text.trim()) {
+            return [];
+        }
+        return [creditTypes.length === 1 ? creditTypes[0].value : undefined, text, credit.element("credit-words").attribute("xml:lang")?.value];
     }
 
     /** @deprecated Old OSMD < 1.8.6 way of parsing composer + subtitles,
@@ -909,13 +1194,19 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         let instrumentId: number = 0;
         const instrumentDict: { [_: string]: Instrument } = {};
         let currentGroup: InstrumentalGroup;
+        // Groups nest by the parts they span, in whatever order the part-list gives their starts and stops.
+        const entryArray: IXmlElement[] = this.orderPartGroupsByNesting(entryList);
+        // The reader builds a nesting tree; crossing numbered groups cannot be named reliably.
+        const canAssignGroupNames: boolean = this.groupNumbersAreProperlyNested(entryArray);
         try {
-            const entryArray: IXmlElement[] = entryList;
             for (let idx: number = 0, len: number = entryArray.length; idx < len; ++idx) {
                 const node: IXmlElement = entryArray[idx];
                 if (node.name === "score-part") {
                     const instrIdString: string = node.attribute("id").value;
                     const instrument: Instrument = new Instrument(instrumentId, instrIdString, this.musicSheet, currentGroup);
+                    // a part without a <part-name> element has no name, like one with an empty <part-name/>:
+                    //   the part id (the Instrument's default name, e.g. "P1") isn't a name to show.
+                    instrument.Name = "";
                     instrumentId++;
                     const partElements: IXmlElement[] = node.elements();
                     for (let idx2: number = 0, len2: number = partElements.length; idx2 < len2; ++idx2) {
@@ -929,6 +1220,13 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                                 }
                             } else if (partElement.name === "part-abbreviation") {
                                 instrument.PartAbbreviation = partElement.value;
+                                if (partElement.attribute("print-object")?.value === "no") {
+                                    instrument.PartAbbreviationPrintObject = false;
+                                }
+                            } else if (partElement.name === "part-abbreviation-display") {
+                                if (partElement.attribute("print-object")?.value === "no") {
+                                    instrument.PartAbbreviationPrintObject = false;
+                                }
                             } else if (partElement.name === "score-instrument") {
                                 const subInstrument: SubInstrument = new SubInstrument(instrument);
                                 subInstrument.idString = partElement.firstAttribute.value;
@@ -1003,7 +1301,25 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                     }
                 } else {
                     if ((node.name === "part-group") && (node.attribute("type").value === "start")) {
-                        const iG: InstrumentalGroup = new InstrumentalGroup("group", this.musicSheet, currentGroup);
+                        const iG: InstrumentalGroup = new InstrumentalGroup(undefined, this.musicSheet, currentGroup);
+                        const groupName: IXmlElement = node.element("group-name");
+                        const groupAbbreviation: IXmlElement = node.element("group-abbreviation");
+                        if (groupName) {
+                            iG.Name = groupName.value;
+                        }
+                        if (groupAbbreviation) {
+                            iG.Abbreviation = groupAbbreviation.value;
+                        }
+                        iG.PrintName = canAssignGroupNames;
+                        iG.PrintAbbreviation = canAssignGroupNames;
+                        const nameDisplay: IXmlElement = node.element("group-name-display");
+                        if (nameDisplay) {
+                            iG.PrintName = iG.PrintName && nameDisplay.attribute("print-object")?.value !== "no";
+                        }
+                        const abbreviationDisplay: IXmlElement = node.element("group-abbreviation-display");
+                        if (abbreviationDisplay) {
+                            iG.PrintAbbreviation = iG.PrintAbbreviation && abbreviationDisplay.attribute("print-object")?.value !== "no";
+                        }
                         if (currentGroup) {
                             currentGroup.InstrumentalGroups.push(iG);
                         } else {
@@ -1013,6 +1329,9 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                     } else {
                         if ((node.name === "part-group") && (node.attribute("type").value === "stop")) {
                             if (currentGroup) {
+                                const hasMultipleParts: boolean = this.countInstrumentsInGroup(currentGroup) > 1;
+                                currentGroup.PrintName = currentGroup.PrintName && hasMultipleParts;
+                                currentGroup.PrintAbbreviation = currentGroup.PrintAbbreviation && hasMultipleParts;
                                 if (currentGroup.InstrumentalGroups.length === 1) {
                                     const instr: InstrumentalGroup = currentGroup.InstrumentalGroups[0];
                                     if (currentGroup.Parent) {
@@ -1036,13 +1355,87 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             throw new MusicSheetReadingException(errorMsg, e);
         }
 
-        for (let idx: number = 0, len: number = this.musicSheet.Instruments.length; idx < len; ++idx) {
-            const instrument: Instrument = this.musicSheet.Instruments[idx];
-            if (!instrument.Name) {
-                instrument.Name = "Instr. " + instrument.IdString;
+        return instrumentDict;
+    }
+
+    private countInstrumentsInGroup(group: InstrumentalGroup): number {
+        let count: number = 0;
+        for (const child of group.InstrumentalGroups) {
+            count += child instanceof Instrument ? 1 : this.countInstrumentsInGroup(child);
+        }
+        return count;
+    }
+
+    private groupNumbersAreProperlyNested(entryList: IXmlElement[]): boolean {
+        const numbers: string[] = [];
+        for (const entry of entryList) {
+            if (entry.name !== "part-group") {
+                continue;
+            }
+            const number: string = entry.attribute("number")?.value ?? "1";
+            if (entry.attribute("type")?.value === "start") {
+                if (numbers.indexOf(number) >= 0) {
+                    return false;
+                }
+                numbers.push(number);
+            } else if (entry.attribute("type")?.value === "stop") {
+                if (numbers.pop() !== number) {
+                    return false;
+                }
             }
         }
-        return instrumentDict;
+        return numbers.length === 0;
+    }
+
+    /**
+     * Returns the part-list entries with the part-group starts and stops between two parts in nesting order:
+     * stops before starts, an inner group's stop first, an outer group's start first.
+     * The part-list may give them in any order, e.g. Finale starts a bracket after a brace starting at the same part.
+     * Groups whose parts overlap stay crossed.
+     */
+    private orderPartGroupsByNesting(entryList: IXmlElement[]): IXmlElement[] {
+        const firstPart: number[] = []; // by entry index, for starts and stops: the group's first part
+        const lastPart: number[] = []; // for starts: the group's last part
+        const startIndex: number[] = []; // for stops: the entry index of the group's start
+        const openStarts: { [groupNumber: string]: number } = {};
+        let parts: number = 0;
+        entryList.forEach((entry: IXmlElement, index: number): void => {
+            if (entry.name === "score-part") {
+                parts++;
+            } else if (entry.name === "part-group") {
+                const groupNumber: string = entry.attribute("number")?.value ?? "1";
+                const start: number = openStarts[groupNumber];
+                if (entry.attribute("type")?.value === "start") {
+                    openStarts[groupNumber] = index;
+                    firstPart[index] = parts;
+                } else if (entry.attribute("type")?.value === "stop" && start !== undefined) {
+                    delete openStarts[groupNumber];
+                    firstPart[index] = firstPart[start];
+                    lastPart[start] = parts - 1;
+                    startIndex[index] = start;
+                }
+            }
+        });
+        const isStop: (index: number) => boolean = (index: number): boolean => entryList[index].attribute("type")?.value === "stop";
+        const order: number[] = entryList.map((entry: IXmlElement, index: number): number => index);
+        for (let runStart: number = 0; runStart < order.length; runStart++) {
+            let runEnd: number = runStart;
+            while (runEnd < order.length && entryList[runEnd].name === "part-group") {
+                runEnd++;
+            }
+            const run: number[] = order.slice(runStart, runEnd).sort((a: number, b: number): number => {
+                if (isStop(a) !== isStop(b)) {
+                    return isStop(a) ? -1 : 1;
+                }
+                if (isStop(a)) { // the group that started last stops first
+                    return (firstPart[b] ?? -1) - (firstPart[a] ?? -1) || (startIndex[b] ?? -1) - (startIndex[a] ?? -1);
+                }
+                return (lastPart[b] ?? parts) - (lastPart[a] ?? parts) || a - b; // the group that stops last starts first
+            });
+            order.splice(runStart, run.length, ...run);
+            runStart = runEnd;
+        }
+        return order.map((index: number): IXmlElement => entryList[index]);
     }
 
     /**
