@@ -1896,6 +1896,9 @@ export class OpenSheetMusicDisplay {
         if (options.spacingFactorSoftmax !== undefined) {
             this.rules.SoftmaxFactorVexFlow = options.spacingFactorSoftmax;
         }
+        if (options.rhythmicSpacingRatio !== undefined) {
+            this.rules.RhythmicSpacingRatio = options.rhythmicSpacingRatio;
+        }
         if (options.spacingBetweenTextLines !== undefined) {
             this.rules.SpacingBetweenTextLines = options.spacingBetweenTextLines;
         }

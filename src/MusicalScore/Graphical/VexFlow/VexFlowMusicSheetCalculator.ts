@@ -438,6 +438,59 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
   //    }
   //}
 
+  private applyRhythmicSpacing(formatter: VF.Formatter, stave: VF.Stave): void {
+    const ratio: number = this.rules.RhythmicSpacingRatio;
+    if (!Number.isFinite(ratio) || ratio < 1 || ratio > 3) {
+      return;
+    }
+    const layout: VF.Formatter & {
+      tickContexts: { list: number[], map: { [tick: number]: VF.TickContext }, resolutionMultiplier: number };
+      totalTicks: { value(): number };
+    } = formatter as typeof layout;
+    const ticks: number[] = layout.tickContexts.list;
+    if (ticks.length < 2) {
+      return;
+    }
+    const contexts: VF.TickContext[] = ticks.map(tick => layout.tickContexts.map[tick]);
+    const endTick: number = layout.totalTicks.value() * layout.tickContexts.resolutionMultiplier;
+    const exponent: number = Math.log2(ratio);
+    const weights: number[] = ticks.map((tick, index) => Math.pow((ticks[index + 1] ?? endTick) - tick, exponent));
+    if (ticks.some((tick, index) => (ticks[index + 1] ?? endTick) <= tick) ||
+        weights.some(weight => !Number.isFinite(weight))) {
+      return;
+    }
+    const firstX: number = contexts[0].getMetrics().extraLeftPx;
+    const minimumGaps: number[] = contexts.map((context, index) =>
+      context.getWidth() - context.getMetrics().extraLeftPx + (contexts[index + 1]?.getMetrics().extraLeftPx ?? 0));
+    const justifyWidth: number = stave.getNoteEndX() - stave.getNoteStartX() - 10;
+    let availableWidth: number = justifyWidth - firstX;
+    const minimumWidth: number = minimumGaps.reduce((sum, gap) => sum + gap, 0);
+    if (!Number.isFinite(availableWidth) || availableWidth < minimumWidth) {
+      return;
+    }
+    let remainingWeight: number = weights.reduce((sum, weight) => sum + weight, 0);
+    const constrained: Set<number> = new Set<number>();
+    const order: number[] = ticks.map((tick, index) => index)
+      .sort((left, right) => minimumGaps[right] / weights[right] - minimumGaps[left] / weights[left]);
+    for (const index of order) {
+      if (minimumGaps[index] <= availableWidth * weights[index] / remainingWeight) {
+        break;
+      }
+      constrained.add(index);
+      availableWidth -= minimumGaps[index];
+      remainingWeight -= weights[index];
+    }
+    let x: number = firstX;
+    for (let index: number = 0; index < contexts.length; index++) {
+      const context: VF.TickContext = contexts[index];
+      context.setX(x);
+      for (const tickable of context.getCenterAlignedTickables()) {
+        (tickable as VF.Tickable & { center_x_shift: number }).center_x_shift = justifyWidth / 2 - x;
+      }
+      x += constrained.has(index) ? minimumGaps[index] : availableWidth * weights[index] / remainingWeight;
+    }
+  }
+
   /**
    * Calculates the x layout of the staff entries within the staff measures belonging to one source measure.
    * All staff entries are x-aligned throughout all vertically aligned staff measures.
@@ -666,12 +719,14 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
 
       const formatVoicesDefault: (w: number, p: VexFlowMeasure) => void = (w, p) => {
         formatter.formatToStave(allVoices, p.getVFStave());
+        this.applyRhythmicSpacing(formatter, p.getVFStave());
       };
       const formatVoicesAlignRests: (w: number,  p: VexFlowMeasure) => void = (w, p) => {
         formatter.formatToStave(allVoices, p.getVFStave(), {
           align_rests: true,
           context: undefined
         });
+        this.applyRhythmicSpacing(formatter, p.getVFStave());
       };
 
       for (const measure of measures) {

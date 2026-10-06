@@ -88,6 +88,14 @@ There are however limited editing features like making notes invisible, coloring
   * [Browse through our Issues](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/issues?&q=is%3Aissue)
   * [Open a new issue](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/issues/new/choose) (may be moved to Discussions).
 
+Optional duration-based horizontal spacing is available with `rhythmicSpacingRatio`, for example
+`new OpenSheetMusicDisplay(container, { rhythmicSpacingRatio: 1.5 })`.
+The default, `0`, preserves the existing layout. Finite values from `1` to `3` set the ideal spacing ratio
+between intervals whose durations differ by a factor of two. At `1.5`, a quarter-note interval ideally
+receives 1.5 times the space of an eighth-note interval. The layout preserves the minimum space
+required by notation and aligns simultaneous onsets across voices and staves. Measures too narrow
+to fit that minimum keep their existing formatting. Set the option to `0` to disable it.
+
 ## Sponsor OSMD and get early access to the audio player and more
 
 <a href="https://github.com/sponsors/opensheetmusicdisplay/" alt="OSMD on Github Sponsors">

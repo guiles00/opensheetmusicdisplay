@@ -495,6 +495,7 @@ export class EngravingRules {
     public MetronomeMarkXShift: number;
     public MetronomeMarkYShift: number;
     public SoftmaxFactorVexFlow: number;
+    public RhythmicSpacingRatio: number;
     /** Stagger (x-shift) whole notes that are the same note, but in different voices (show 2 instead of 1). */
     public StaggerSameWholeNotes: boolean;
     public MaxInstructionsConstValue: number;
@@ -1088,6 +1089,7 @@ export class EngravingRules {
         this.SoftmaxFactorVexFlow = 15; // only applies to Vexflow 3.x. 15 seems like the sweet spot. Vexflow default is 100.
         // if too high, score gets too big, especially half notes. with half note quarter quarter, the quarters get squeezed.
         // if too low, smaller notes aren't positioned correctly.
+        this.RhythmicSpacingRatio = 0;
         this.StaggerSameWholeNotes = true;
 
         // Render options (whether to render specific or invisible elements)
