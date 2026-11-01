@@ -133,7 +133,7 @@ export class VoiceGenerator {
       this.currentNote.DotsXml = dotsXml;
       // read lyrics
       const lyricElements: IXmlElement[] = noteNode.elements("lyric");
-      if (this.lyricsReader !== undefined && lyricElements) {
+      if (this.lyricsReader !== undefined && lyricElements.length > 0) {
         this.lyricsReader.addLyricEntry(lyricElements, this.currentVoiceEntry);
         this.voice.Parent.HasLyrics = true;
       }
@@ -1146,6 +1146,7 @@ export class VoiceGenerator {
               const tie: Tie = new Tie(this.currentNote, tieType);
               tie.TieNumber = newTieNumber;
               tie.TieDirection = tieDirection;
+              tie.TieDirectionXml = tieDirection;
               tie.TieDirectionFromXml = tieDirection !== PlacementEnum.NotYetDefined;
               const tieEndTimestamp: Fraction = Fraction.plus(
                 Fraction.plus(measureStartAbsoluteTimestamp, this.currentVoiceEntry.Timestamp), this.currentNote.Length);

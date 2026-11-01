@@ -29,6 +29,7 @@ import { GraphicalObject } from "./GraphicalObject";
 import { GraphicalLyricEntry } from "./GraphicalLyricEntry";
 import { GraphicalChordSymbolContainer } from "./GraphicalChordSymbolContainer";
 import { ClassType } from "../Interfaces/AClassHierarchyTrackable";
+import { ITransposeCalculator } from "../Interfaces/ITransposeCalculator";
 // import { VexFlowMusicSheetDrawer } from "./VexFlow/VexFlowMusicSheetDrawer";
 // import { SvgVexFlowBackend } from "./VexFlow/SvgVexFlowBackend"; // causes build problem with npm start
 
@@ -68,6 +69,11 @@ export class GraphicalMusicSheet {
     //private systemImages: Dictionary<MusicSystem, SystemImageProperties> = new Dictionary<MusicSystem, SystemImageProperties>();
     private numberOfStaves: number;
     private leadSheet: boolean = false;
+    /** The transposition the graphical notes and chord symbols were created with (see Initialize()):
+     *  MusicSheet.Transpose, followed by each instrument's Transpose. */
+    private preparedTransposition: number[] = [];
+    /** The transpose calculator the graphical notes and chord symbols were created with (see Initialize()). */
+    private preparedTransposeCalculator: ITransposeCalculator;
 
     public get ParentMusicSheet(): MusicSheet {
         return this.musicSheet;
@@ -206,11 +212,40 @@ export class GraphicalMusicSheet {
         return this.layoutGeneration;
     }
 
+    /** Empties the lists of graphical objects for creating them from the music sheet (MusicSheetCalculator.prepareGraphicalMusicSheet()),
+     *  and remembers the transposition they are created with, see {@link TranspositionChanged}.
+     */
     public Initialize(): void {
         this.verticalGraphicalStaffEntryContainers = [];
         this.musicPages = [];
         this.measureList = [];
         this.layoutGeneration = GraphicalMusicSheet.nextLayoutGeneration++;
+        this.preparedTransposition = this.currentTransposition();
+        this.preparedTransposeCalculator = MusicSheetCalculator.transposeCalculator;
+    }
+
+    /** Whether the transposition changed since the graphical notes and chord symbols were created:
+     *  osmd.Sheet.Transpose, an instrument's Transpose, or, while one of them isn't 0, osmd.TransposeCalculator.
+     *  The notes and chord symbols are transposed when they are created, the key signatures in each layout (reCalculate()),
+     *  so osmd.render() creates the graphic again when the transposition changed.
+     *  A changed option of the same calculator (e.g. IntervalTransposeCalculator.AvoidDoubleAccidentals) doesn't count:
+     *  call osmd.updateGraphic() after that.
+     */
+    public get TranspositionChanged(): boolean {
+        if (this.preparedTransposition.length === 0) {
+            return false;
+        }
+        const transposition: number[] = this.currentTransposition();
+        if (transposition.some((halftones: number, index: number): boolean => halftones !== this.preparedTransposition[index])) {
+            return true;
+        }
+        return transposition.some((halftones: number): boolean => halftones !== 0) &&
+            MusicSheetCalculator.transposeCalculator !== this.preparedTransposeCalculator;
+    }
+
+    /** The halftones the sheet is transposed by: MusicSheet.Transpose, followed by each instrument's Transpose. */
+    private currentTransposition(): number[] {
+        return [this.musicSheet.Transpose, ...this.musicSheet.Instruments.map((instrument: Instrument): number => instrument.Transpose)];
     }
 
     public reCalculate(): void {
@@ -244,6 +279,11 @@ export class GraphicalMusicSheet {
         return undefined;
     }
 
+    /**
+     * Find a measure by its zero-based source index and staff index.
+     * Collapsed multiple-rest members resolve to their representative measure (the multiple rest measure),
+     * and an index beyond the score's end (e.g. from the cursor) resolves to the last measure.
+     */
     public findGraphicalMeasure(measureIndex: number, staffIndex: number): GraphicalMeasure {
         // note the cursor calls this with measureIndex 1 (measure 2) when advancing beyond the end of a 1-measure piece
         for (let i: number = measureIndex; i >= 0; i--) {
@@ -495,6 +535,8 @@ export class GraphicalMusicSheet {
     /**
      * Get a List with the indices of all the visible GraphicalMeasures and calculates their
      * corresponding indices in the first SourceMeasure, taking into account Instruments with multiple Staves.
+     * Hidden staves (Staff.Visible = false) of a visible instrument are left out,
+     * so the list matches the drawn staff lines (see MusicSystemBuilder.layoutSystemStaves()).
      * @param visibleMeasures
      * @returns {number[]}
      */
@@ -512,6 +554,9 @@ export class GraphicalMusicSheet {
             const instrument: Instrument = visibleInstruments[idx];
             const index: number = this.musicSheet.getGlobalStaffIndexOfFirstStaff(instrument);
             for (let j: number = 0; j < instrument.Staves.length; j++) {
+                if (!instrument.Staves[j].Visible) {
+                    continue; // e.g. the right hand of a piano for "left hand only": its measures aren't in visibleMeasures
+                }
                 visibleStavesIndices.push(index + j);
             }
         }
@@ -953,7 +998,7 @@ export class GraphicalMusicSheet {
     public getClickedObjectOfType<T>(positionOnMusicSheet: PointF2D): T {
         for (let idx: number = 0, len: number = this.musicPages.length; idx < len; ++idx) {
             const page: GraphicalMusicPage = this.musicPages[idx];
-            const o: Object = page.PositionAndShape.getClickedObjectOfType<T>(positionOnMusicSheet);
+            const o: T = page.PositionAndShape.getClickedObjectOfType<T>(positionOnMusicSheet);
             if (o) {
                 return (o as T);
             }

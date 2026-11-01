@@ -30,6 +30,12 @@ function connectedKeys(container: HTMLElement): Set<string> {
         .map(group => group.dataset.osmdSystemKey));
 }
 
+
+/** A note head's shape: its path, or with EngravingRules.SVGMergeSingleChildGroups false, the path in its group. */
+function noteheadShape(notehead: Element): SVGPathElement {
+    return (notehead?.matches("path") ? notehead : notehead?.querySelector("path")) as SVGPathElement;
+}
+
 describe("System virtualization lookup", () => {
     for (const overscan of [0, 1]) {
         it(`attaches exactly the systems in the window and reports every change (overscan ${overscan})`, async () => {
@@ -138,7 +144,7 @@ describe("System virtualization lookup", () => {
             .flatMap(staffEntry => staffEntry.graphicalVoiceEntries)
             .flatMap(voiceEntry => voiceEntry.notes) as VexFlowGraphicalNote[];
         const note: VexFlowGraphicalNote = firstSystemNotes[0];
-        const notehead: () => Element = (): Element => note.getNoteheadSVGs()[0].querySelector("path");
+        const notehead: () => Element = (): Element => noteheadShape(note.getNoteheadSVGs()[0]);
         note.setOpacity(0);
         expect(notehead().getAttribute("opacity")).to.equal("0");
 
@@ -169,7 +175,7 @@ describe("System virtualization lookup", () => {
         const note: VexFlowGraphicalNote = osmd.GraphicSheet.MeasureList[0][0].staffEntries[0]
             .graphicalVoiceEntries[0].notes[0] as VexFlowGraphicalNote;
         note.setOpacity(0.5);
-        expect(note.getNoteheadSVGs()[0].querySelector("path").getAttribute("opacity")).to.equal("0.5");
+        expect(noteheadShape(note.getNoteheadSVGs()[0]).getAttribute("opacity")).to.equal("0.5");
     });
 
     const nextFrame: () => Promise<void> = (): Promise<void> =>

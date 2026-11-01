@@ -135,6 +135,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
      * By default, this will also hide the note's slurs, ties and glissandi, e.g. slides (see visibilityOptions).
      * (This only works with the default SVG backend, not with the Canvas backend/renderer)
      * To get a GraphicalNote from a Note, use osmd.EngravingRules.GNote(note).
+     * To check whether a note is visible, e.g. after setVisible(false), use isVisible().
      */
     public setVisible(visible: boolean, visibilityOptions: VisibilityOptions = {}): void {
         this.retainedVisibility = { visible, options: visibilityOptions };
@@ -152,8 +153,17 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         const visibilityAttribute: string = "visibility";
         const visibilityString: string = visible ? "visible" : "hidden";
         if (applyToNotehead) {
+            const noteSVG: SVGGElement = this.getSVGGElement();
+            if (!applyToStem) {
+                // the stem of a note without a beam is drawn in the note's group (a beam draws the stems of its notes),
+                //   so it would be hidden with it: give it its own visibility, the one it has now, to keep it as it is.
+                const stemSVG: HTMLElement = this.getStemSVG();
+                if (noteSVG?.contains(stemSVG) && !stemSVG.hasAttribute(visibilityAttribute)) {
+                    stemSVG.setAttribute(visibilityAttribute, noteSVG.getAttribute(visibilityAttribute) === "hidden" ? "hidden" : "visible");
+                }
+            }
             // so that it also matches undefined (option not set).
-            this.getSVGGElement()?.setAttribute(visibilityAttribute, visibilityString);
+            noteSVG?.setAttribute(visibilityAttribute, visibilityString);
         }
         // instead of setAttribute, remove() also works, but isn't reversible.
         if (applyToStem) {
@@ -202,6 +212,15 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         // }
         // osmd.render();
         // this currently also still leaves ledger lines visible.
+    }
+
+    /** Whether the note is visible: false after setVisible(false), which hides its notehead (unless
+     * VisibilityOptions.applyToNotehead is false), and for a note hidden in the score, e.g. by print-object="no" (see Note.isVisible()).
+     * Like setVisible(), this works on the drawn SVG: a new render draws the notes hidden with setVisible() visible again.
+     * It's true for a note that isn't drawn at all, e.g. of a hidden instrument (Instrument.Visible false).
+     */
+    public isVisible(): boolean {
+        return super.isVisible() && this.getSVGGElement()?.getAttribute("visibility") !== "hidden";
     }
 
     /**
@@ -311,11 +330,11 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             // We want to return the same type of node every time, not a path node if no beam and a group node if it has a beam.
         }
         return groupOrPath;
-        // more correct, but Vex.Prefix() is not in the definitions:
-        //return document.getElementById((Vex as any).Prefix(this.getSVGId() + "-stem"));
+        // more correct than "vf-" for the id, but Vex.Prefix() is not in the definitions: (Vex as any).Prefix(this.getSVGId() + "-stem")
     }
 
-    /** Gets the SVG path elements of the beams starting on this note. */
+    /** Gets the SVG elements of the beams starting on this note: each beam's path, or with
+     *  EngravingRules.SVGMergeSingleChildGroups false, each beam's group (with the path). */
     public getBeamSVGs(): HTMLElement[] {
         const beamSVGs: HTMLElement[] = [];
         for (let i: number = 0;; i++) {
@@ -479,7 +498,8 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return Array.from(elements);
     }
 
-    /** Gets the SVG elements of the note heads, e.g. the paths of a chord's heads, or the fret numbers of a TAB note (and its chord). */
+    /** Gets the SVG elements of the note heads, e.g. the paths of a chord's heads (with EngravingRules.SVGMergeSingleChildGroups
+     *  false: each head's group), or the fret numbers of a TAB note (and its chord). */
     public getNoteheadSVGs(): HTMLElement[] {
         if (this.isTabNote) {
             return this.getTabNoteSVGs().frets;
@@ -496,6 +516,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return noteheads;
     }
 
+    /** Gets the SVG element of the note's flag: its path, or with EngravingRules.SVGMergeSingleChildGroups false, its group. */
     public getFlagSVG(): HTMLElement {
         const vfNote: HTMLElement = this.getVFNoteSVG();
         if (vfNote?.children?.length) {
@@ -524,8 +545,8 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return undefined;
     }
 
-    /** Gets the SVG elements of the note's modifiers: the groups of a stave note's modifiers (e.g. accidentals),
-     *  or the shapes of a TAB note's modifiers (e.g. a bend's curve, arrow and label). */
+    /** Gets the SVG elements of the note's modifiers: the groups of a stave note's modifiers (e.g. accidentals; none if the
+     *  note has no modifiers), or the shapes of a TAB note's modifiers (e.g. a bend's curve, arrow and label). */
     public getModifierSVGs(): HTMLElement[] {
         if (this.isTabNote) {
             return this.getTabNoteSVGs().modifiers;
@@ -566,12 +587,19 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         return { frets, modifiers };
     }
 
-    /** Colors the paths of a group, e.g. of a note head, or a single shape, e.g. of a TAB note or a glissando: its fill,
-     *  or its stroke if it's only a line, like the curve of a bend or the line of a slide. */
+    /** Colors the paths of a group, e.g. of the accidentals, or a single shape, e.g. a note head, a beam, a TAB note or a
+     *  glissando: its fill, or its stroke if it's only a line, like the curve of a bend or the line of a slide.
+     *  A group in the group keeps its colors, e.g. a grace note in its main note's modifiers (it has its own setColor()):
+     *  its shapes would take a fill set on the group, as they leave out the default black (see the VexFlowPatch's SVGContext).
+     *  An ornament's group in the modifiers (g.vf-ornament: its glyph and accidental marks) is colored like the modifiers. */
     private static colorShapes(element: Element, color: string): void {
         if (element.children.length > 0) {
             for (const path of element.children) {
-                path.setAttribute("fill", color);
+                if (path.tagName !== "g") {
+                    path.setAttribute("fill", color);
+                } else if (path.classList.contains("vf-ornament")) {
+                    VexFlowGraphicalNote.colorShapes(path, color);
+                }
             }
         } else if (element.getAttribute("fill") === "none") {
             element.setAttribute("stroke", color);
@@ -606,18 +634,14 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         if (applyToBeams) {
             const beams: HTMLElement[] = this.getBeamSVGs();
             for (const beam of beams) {
-                for (const beamPath of beam.children) {
-                    beamPath.setAttribute("fill", color);
-                }
+                VexFlowGraphicalNote.colorShapes(beam, color); // the path, or its group (EngravingRules.SVGMergeSingleChildGroups)
             }
         }
 
         if (applyToFlag) {
             const flag: HTMLElement = this.getFlagSVG();
             if (flag) {
-                for (const flagPath of flag.children) {
-                    flagPath.setAttribute("fill", color);
-                }
+                VexFlowGraphicalNote.colorShapes(flag, color);
             }
         }
 
@@ -749,16 +773,12 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         }
 
         for (const beam of beamSVGs) {
-            for (const beamPath of beam.children) {
-                beamPath.setAttribute("opacity", targetBeamOpacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(beam, targetBeamOpacity);
         }
 
         const flag: HTMLElement = this.getFlagSVG();
         if (flag) {
-            for (const flagPath of flag.children) {
-                flagPath.setAttribute("opacity", opacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(flag, opacity);
         }
 
         const ledgerLines: HTMLElement[] = this.getLedgerLineSVGs();
@@ -784,23 +804,17 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
         const modifiers: HTMLElement[] = this.getModifierSVGs();
         for (const modifier of modifiers) {
-            for (const path of modifier.children) {
-                path.setAttribute("opacity", opacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(modifier, opacity);
         }
 
         const noteheads: HTMLElement[] = this.getNoteheadSVGs();
         for (const notehead of noteheads) {
-            for (const noteheadPath of notehead.children) {
-                noteheadPath.setAttribute("opacity", opacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(notehead, opacity);
         }
 
         const slurs: HTMLElement[] = this.getSlurSVGs();
         for (const slur of slurs) {
-            for (const path of slur.children) {
-                path.setAttribute("opacity", opacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(slur, opacity);
         }
 
         const stem: HTMLElement = this.getStemSVG();
@@ -810,9 +824,18 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
         const ties: HTMLElement[] = this.getTieSVGs();
         for (const tie of ties) {
-            for (const path of tie.children) {
-                path.setAttribute("opacity", opacity.toString());
-            }
+            VexFlowGraphicalNote.setShapesOpacity(tie, opacity);
+        }
+    }
+
+    /** Sets the opacity of a group's shapes, or of a single shape drawn without a group (EngravingRules.SVGMergeSingleChildGroups). */
+    private static setShapesOpacity(element: Element, opacity: number): void {
+        if (element.children.length === 0) {
+            element.setAttribute("opacity", opacity.toString());
+            return;
+        }
+        for (const child of element.children) {
+            child.setAttribute("opacity", opacity.toString());
         }
     }
 
@@ -833,7 +856,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             ];
             const classSelector: string = `.${VexFlowGraphicalNote.GraceNoteClass}`;
             for (const part of parts) {
-                if (part?.childElementCount > 0 && !part.parentElement?.closest(classSelector)) {
+                if (part && (part.childElementCount > 0 || part.tagName !== "g") && !part.parentElement?.closest(classSelector)) {
                     part.classList.add(VexFlowGraphicalNote.GraceNoteClass);
                 }
             }

@@ -7,6 +7,12 @@ import { GraphicalLabel } from "../../src/MusicalScore/Graphical/GraphicalLabel"
 import { TestUtils } from "../Util/TestUtils";
 import { generateLargePianoScore } from "../performance/LargeScoreFixtures";
 
+
+/** A note head's shape: its path, or with EngravingRules.SVGMergeSingleChildGroups false, the path in its group. */
+function noteheadShape(notehead: Element): SVGPathElement {
+    return (notehead?.matches("path") ? notehead : notehead?.querySelector("path")) as SVGPathElement;
+}
+
 describe("OpenSheetMusicDisplay virtualized render", () => {
     it("lays out the complete score while drawing only the initial systems", async () => {
         const scrollElement: HTMLDivElement = document.createElement("div");
@@ -52,7 +58,7 @@ describe("OpenSheetMusicDisplay virtualized render", () => {
             `g.osmd-system[data-osmd-system-key='${page.PageNumber}:${lastSystemIndex}']`
         );
         expect(lastSystemGroup).to.not.equal(null);
-        const futureNotePath: SVGPathElement = futureNote.getNoteheadSVGs()[0]?.querySelector("path");
+        const futureNotePath: SVGPathElement = noteheadShape(futureNote.getNoteheadSVGs()[0]);
         expect(futureNotePath?.getAttribute("fill")).to.equal("#d40000");
 
         osmd.disableSystemVirtualization();
@@ -94,7 +100,7 @@ describe("OpenSheetMusicDisplay virtualized render", () => {
         osmd.updateSystemVirtualization();
         const recreatedRoot: SVGGElement = container.querySelector("g.osmd-system[data-osmd-system-key='1:0']");
         expect(recreatedRoot).to.not.equal(firstRoot);
-        const notehead: Element = note.getNoteheadSVGs()[0]?.querySelector("path");
+        const notehead: Element = noteheadShape(note.getNoteheadSVGs()[0]);
         expect(notehead?.getAttribute("fill")).to.equal("#d40000");
         expect(notehead?.getAttribute("opacity")).to.equal("0.4");
         note.getSVGGElement().dispatchEvent(new MouseEvent("click"));

@@ -23,7 +23,7 @@ import { BoundingBox } from "../../../../src/MusicalScore/Graphical/BoundingBox"
 import { OctaveEnum } from "../../../../src/MusicalScore/VoiceData/Expressions/ContinuousExpressions/OctaveShift";
 import { Tuplet } from "../../../../src/MusicalScore/VoiceData/Tuplet";
 import { Note } from "../../../../src/MusicalScore/VoiceData/Note";
-import { VoiceEntry } from "../../../../src/MusicalScore/VoiceData/VoiceEntry";
+import { ArticulationEnum, VoiceEntry } from "../../../../src/MusicalScore/VoiceData/VoiceEntry";
 import { TabNote } from "../../../../src/MusicalScore/VoiceData/TabNote";
 import { PointF2D } from "../../../../src/Common/DataObjects/PointF2D";
 import { GraphicalTie } from "../../../../src/MusicalScore/Graphical/GraphicalTie";
@@ -314,9 +314,10 @@ describe("VexFlow Measure", () => {
          osmd.render();
          expect(drawnOrnamentAccidentals(osmd), "[above, below] of each measure's turn").to.deep.equal(
             [[[], ["##"]], [[], ["#", "#"]], [[], ["n", "#"]], [["#", "#"], []]]);
-         // the two sharps of measure 2 are drawn side by side with a space between them, before the turn itself
+         // the two sharps of measure 2 are drawn side by side with a space between them, before the turn itself (in the
+         //   ornament's group, g.vf-ornament)
          const ornamentPaths: Element[] = Array.from((osmd.GraphicSheet.MeasureList[1][0].staffEntries[0].graphicalVoiceEntries[0]
-            .notes[0] as VexFlowGraphicalNote).getModifierSVGs()[0].children);
+            .notes[0] as VexFlowGraphicalNote).getModifierSVGs()[0].querySelector("g.vf-ornament").children);
          const [first, second] = ornamentPaths.map((path: Element): DOMRect => (path as SVGGraphicsElement).getBBox());
          // the accidentalSpacing (3) is scaled by 1/1.3, like the ornament's accidentals themselves
          expect(second.x - (first.x + first.width), "the space between the two sharps").to.be.closeTo(3 / 1.3, 1.5);
@@ -333,9 +334,10 @@ describe("VexFlow Measure", () => {
          osmd.render();
          expect(drawnOrnamentAccidentals(osmd), "[above, below] of each measure's ornament").to.deep.equal(
             [[["#", "##"], []], [[], ["b", "bb"]], [[], ["n", "b"]], [["bs"], []]]);
-         // the sharp and the double sharp of the triple sharp share one line, like the accidentals of a note
+         // the sharp and the double sharp of the triple sharp share one line, like the accidentals of a note (in the
+         //   ornament's group, g.vf-ornament, after the trill)
          const ornamentPaths: Element[] = Array.from((osmd.GraphicSheet.MeasureList[0][0].staffEntries[0].graphicalVoiceEntries[0]
-            .notes[0] as VexFlowGraphicalNote).getModifierSVGs()[0].children);
+            .notes[0] as VexFlowGraphicalNote).getModifierSVGs()[0].querySelector("g.vf-ornament").children);
          const [sharp, doubleSharp] = ornamentPaths.slice(1).map((path: Element): DOMRect => (path as SVGGraphicsElement).getBBox());
          expect(sharp.y + sharp.height / 2, "the centers of the sharp and the double sharp")
             .to.be.closeTo(doubleSharp.y + doubleSharp.height / 2, 1);
@@ -940,6 +942,99 @@ describe("VexFlow Measure", () => {
       }).catch(done);
    });
 
+   // Vexflow moves the C5 of voice 2 right of the D5 of voice 1, a second above (its x shift, see StaveNote.format()).
+   // Before fix, the marks above or below a note were drawn at its unmoved x (StaveNote.getModifierStartXY() left out the
+   // x shift): the accent of the C5 on the head of the D5, and the tremolo strokes of the C5 left of its stem. And the
+   // mordent of the C5, on the text line above the trill of the D5, was drawn at the trill's height, over it: each ornament
+   // counted its text line from its own note, the mordent from the head of the C5, the trill from the stem tip of the D5.
+   // Likewise the fermatas of two whole notes, the one of the C5 from its head, the one of the D5 from the line above the
+   // staff that it was moved to.
+   it("Draws the marks of a voice moved aside at its notes, and stacks the marks of both voices", (done: Mocha.Done) => {
+      const score: Document = TestUtils.getScore("test_articulations_voices_moved_aside.musicxml");
+      if (!score) {
+         done(new Error("Score file not found"));
+         return;
+      }
+      const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+
+      osmd.load(score).then(() => {
+         osmd.render();
+         /** The note of the voice on the measure's first beat. */
+         function noteOnBeat1(measureIndex: number, voiceId: number): VexFlowGraphicalNote {
+            return osmd.GraphicSheet.findGraphicalMeasure(measureIndex, 0).staffEntries[0].graphicalVoiceEntries
+               .find((gve: GraphicalVoiceEntry) => gve.parentVoiceEntry.ParentVoice.VoiceId === voiceId).notes[0] as VexFlowGraphicalNote;
+         }
+         /** A drawn box, in units like the notes' positions (y points down). */
+         interface Box { left: number, right: number, top: number, bottom: number }
+         /** The drawn box of the note's only mark. */
+         function markBox(note: VexFlowGraphicalNote): Box {
+            const box: DOMRect = (note.getSVGGElement().querySelector(".vf-modifiers") as SVGGElement).getBBox();
+            return { left: box.x / unitInPixels, right: (box.x + box.width) / unitInPixels,
+               top: box.y / unitInPixels, bottom: (box.y + box.height) / unitInPixels };
+         }
+
+         // m1: the accents, centered on their note heads (the note's x is the center of its drawn head)
+         const d5: VexFlowGraphicalNote = noteOnBeat1(0, 1);
+         const c5: VexFlowGraphicalNote = noteOnBeat1(0, 2);
+         expect(c5.PositionAndShape.AbsolutePosition.x - d5.PositionAndShape.AbsolutePosition.x, "m1: the C5 is drawn right of the D5")
+            .to.be.above(0.5);
+         for (const [note, name] of [[d5, "D5"], [c5, "C5"]] as [VexFlowGraphicalNote, string][]) {
+            const accent: Box = markBox(note);
+            expect((accent.left + accent.right) / 2, `m1: the accent of the ${name} on its head`)
+               .to.be.closeTo(note.PositionAndShape.AbsolutePosition.x, 0.1);
+         }
+
+         // m2: the tremolo strokes of the C5 cross its stem
+         const tremoloNote: VexFlowGraphicalNote = noteOnBeat1(1, 2);
+         const tremolo: Box = markBox(tremoloNote);
+         const stemBox: DOMRect = (tremoloNote.getSVGGElement().querySelector(".vf-stem") as SVGGElement).getBBox();
+         const stemX: number = (stemBox.x + stemBox.width / 2) / unitInPixels;
+         expect(stemX, "m2: the stem of the C5 between the left and the right end of its tremolo strokes")
+            .to.be.within(tremolo.left, tremolo.right);
+
+         // m3: the mordent of the C5 above its head, and above the trill of the D5
+         const trill: Box = markBox(noteOnBeat1(2, 1));
+         const mordentNote: VexFlowGraphicalNote = noteOnBeat1(2, 2);
+         const mordent: Box = markBox(mordentNote);
+         expect((mordent.left + mordent.right) / 2, "m3: the mordent of the C5 above its head")
+            .to.be.closeTo(mordentNote.PositionAndShape.AbsolutePosition.x, 0.1);
+         expect(mordent.bottom, "m3: the bottom of the mordent of the C5 above the top of the trill of the D5").to.be.at.most(trill.top);
+
+         // m4: the fermata of the C5 above the fermata of the D5 (whole notes: both moved out of the staff)
+         const d5Fermata: Box = markBox(noteOnBeat1(3, 1));
+         const c5Fermata: Box = markBox(noteOnBeat1(3, 2));
+         expect(c5Fermata.bottom, "m4: the bottom of the fermata of the C5 above the top of the fermata of the D5")
+            .to.be.at.most(d5Fermata.top);
+         done();
+      }).catch(done);
+   });
+
+   // The inverted fermata of the stem-up A2 (voice 5) in the lower staff is drawn below the stem-down D2 of voice 6, the
+   // last voice entry of the staff entry, so that it doesn't overlap that note (#1278). Before fix, it was moved there in
+   // the model: added to the articulations of voice 6 (and kept in those of voice 5), so every updateGraphic() drew one
+   // more fermata there.
+   it("Draws an inverted fermata below the last voice once, also after updateGraphic()", (done: Mocha.Done) => {
+      const score: Document = TestUtils.getScore("test_fermata_inverted_placement.musicxml");
+      const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+      osmd.load(score).then(() => {
+         osmd.render();
+         // the lower staff at the first beat: voice 5 (A2 with the fermata), voice 6 (D2)
+         const voiceEntries: VoiceEntry[] = osmd.Sheet.SourceMeasures[0].VerticalSourceStaffEntryContainers[0].StaffEntries[1].VoiceEntries;
+         /** The articulations of each voice entry, by name. */
+         const articulations: () => string[][] = () => voiceEntries.map((voiceEntry: VoiceEntry) =>
+            voiceEntry.Articulations.map((articulation) => ArticulationEnum[articulation.articulationEnum]));
+         /** The lowest point of the lower staff's bottom line, in units (y points down): one fermata lower per fermata drawn. */
+         const lowestPoint: () => number = () => Math.max(...osmd.GraphicSheet.MusicPages[0].MusicSystems[0].StaffLines[1].BottomLine);
+         expect(articulations(), "first layout").to.deep.equal([["invertedfermata"], []]);
+         const firstLowestPoint: number = lowestPoint();
+         osmd.updateGraphic();
+         osmd.render();
+         expect(articulations(), "after updateGraphic()").to.deep.equal([["invertedfermata"], []]);
+         expect(lowestPoint(), "the lowest point of the bottom line after updateGraphic()").to.equal(firstLowestPoint);
+         done();
+      }).catch(done);
+   });
+
    // A fingering label is stacked in the pitch order of its note, which is not the order the
    // fingerings were read in, so the label's index in FingeringEntries says nothing about which
    // note it belongs to. GraphicalLabel.sourceNote carries that link, letting a consumer find the
@@ -1082,14 +1177,10 @@ describe("VexFlow Measure", () => {
             tuplet.Notes.flat().filter((note: Note) => note.PrintObject && note.ParentStaff === measure.ParentStaff);
          expect(drawnNotes(triplets[0], upperMeasure).length, "notes of the first triplet drawn on the upper staff").to.equal(1);
 
-         // The indices of the triplets with a number drawn in the measure. The numbers are the glyphs (filled paths) in the
-         //   measure's SVG group that belong to no note, beam, clef, key or time signature, which have groups of their own
-         //   (the staff lines are stroked). A number is centered over the triplet's notes in the staff.
+         // The indices of the triplets with a number drawn in the measure. The numbers are the paths of the measure's tuplets
+         //   (path.vf-tuplet, or in a g.vf-tuplet with a bracket's rects). A number is centered over the triplet's notes in the staff.
          const numberedTriplets: (measure: GraphicalMeasure) => number[] = (measure: GraphicalMeasure): number[] => {
-            const measureGroup: Element = (measure.staffEntries[0].graphicalVoiceEntries[0].notes[0] as VexFlowGraphicalNote)
-               .getSVGGElement().closest("g.vf-measure");
-            const numbers: Element[] = Array.from(measureGroup.querySelectorAll("path[stroke='none']")).filter((path: Element) =>
-               !path.closest("g.vf-stavenote, g.vf-beam, g.vf-clef, g.vf-keysignature, g.vf-timesignature"));
+            const numbers: Element[] = Array.from(measure.getSVGGElement().querySelectorAll("path.vf-tuplet, .vf-tuplet > path"));
             return numbers.map((tupletNumber: Element) => {
                const numberBox: DOMRect = (tupletNumber as SVGGraphicsElement).getBBox();
                const centerX: number = numberBox.x + numberBox.width / 2;
@@ -1164,7 +1255,10 @@ describe("VexFlow Measure", () => {
    // Non-regression test for the WIDTH-DRIVEN case of SlurFlattenToObstacle (issue #1466): a wide slur over a
    // (near-)flat passage must not balloon. The minimum-arc floor grows with sqrt(width) rather than linearly, so
    // wide slurs stay proportionally flat. Chopin Étude Op. 10 No. 4 has several system-spanning slurs that would
-   // otherwise arc very high; this checks the widest slur on the sheet is flattened substantially.
+   // otherwise arc very high; this checks the widest slur of measures 61-68 is flattened substantially. That is the
+   // widest slur of the whole sheet in Firefox (measures 66-68), and as wide and flattened as the widest in Chrome, whose
+   // narrower window breaks the systems elsewhere: the same check as for all 83 measures, which take 6 to 8 times as long
+   // to render.
    it("Keeps a wide slur over a flat passage from ballooning (SlurFlattenToObstacle, width-driven)", (done: Mocha.Done) => {
       const score: Document = TestUtils.getScore("test_dynamics_attribute_Chopin_Etudes_op_10_4_Duepree02.musicxml");
       if (!score) {
@@ -1209,6 +1303,9 @@ describe("VexFlow Measure", () => {
 
       const osmdOff: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
       const osmdOn: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+      for (const osmd of [osmdOff, osmdOn]) {
+         osmd.setOptions({ drawFromMeasureNumber: 61, drawUpToMeasureNumber: 68 });
+      }
 
       osmdOff.load(xml).then(() => {
          osmdOff.EngravingRules.SlurFlattenToObstacle = false;
@@ -1337,6 +1434,41 @@ describe("VexFlow Measure", () => {
       }).catch(done);
    });
 
+
+   // A staff becomes a tablature staff at its TAB clef (Staff.isTab), and stays one for the rest of the score (#1592). Before
+   // fix, a new calculation started with the previous one's Staff.isTab: after updateGraphic(), the measures before the TAB
+   // clef were tablature measures too.
+   it("Keeps the measures before a TAB clef standard measures after updateGraphic()", (done: Mocha.Done) => {
+      const xml: string = `<?xml version="1.0" encoding="UTF-8"?>
+      <score-partwise version="4.0">
+         <part-list><score-part id="P1"><part-name>Guitar</part-name></score-part></part-list>
+         <part id="P1">
+            <measure number="1">
+               <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>
+                  <clef><sign>G</sign><line>2</line></clef></attributes>
+               <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>
+            </measure>
+            <measure number="2">
+               <attributes><clef><sign>TAB</sign><line>5</line></clef><staff-details><staff-lines>6</staff-lines></staff-details></attributes>
+               <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>whole</type>
+                  <notations><technical><string>1</string><fret>8</fret></technical></notations></note>
+            </measure>
+         </part>
+      </score-partwise>`;
+      const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+      osmd.load(xml).then(() => {
+         osmd.render();
+         for (const layout of ["first layout", "after updateGraphic()"]) {
+            if (layout !== "first layout") {
+               osmd.updateGraphic();
+               osmd.render();
+            }
+            expect(osmd.GraphicSheet.findGraphicalMeasure(0, 0).isTabMeasure, `${layout}: measure 1 is a standard measure`).to.equal(false);
+            expect(osmd.GraphicSheet.findGraphicalMeasure(1, 0).isTabMeasure, `${layout}: measure 2 is a tablature measure`).to.equal(true);
+         }
+         done();
+      }).catch(done);
+   });
 
    // Non-regression test for grace notes in tablature staves (#1721). A tab measure converted its grace notes to
    // Vexflow TabNotes, but then dropped them: like in classical measures they are no tickables of the Vexflow voice,

@@ -34,7 +34,6 @@ import { unitInPixels } from "./VexFlowMusicSheetDrawer";
 import { VexFlowGraphicalNote } from "./VexFlowGraphicalNote";
 import { TechnicalInstruction } from "../../VoiceData/Instructions/TechnicalInstruction";
 import { GraphicalLyricEntry } from "../GraphicalLyricEntry";
-import { GraphicalLabel } from "../GraphicalLabel";
 import { LyricsEntry } from "../../VoiceData/Lyrics/LyricsEntry";
 import { GraphicalLyricWord } from "../GraphicalLyricWord";
 import { VexFlowStaffEntry } from "./VexFlowStaffEntry";
@@ -116,8 +115,13 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
     super();
     this.rules = rules;
     MusicSheetCalculator.symbolFactory = new VexFlowGraphicalSymbolFactory();
-    MusicSheetCalculator.TextMeasurer = new VexFlowTextMeasurer(this.rules);
-    MusicSheetCalculator.stafflineNoteCalculator = new VexflowStafflineNoteCalculator(this.rules);
+    // per instance, not static: see EngravingRules.TextMeasurer
+    this.rules.TextMeasurer = new VexFlowTextMeasurer(this.rules);
+    this.stafflineNoteCalculator = new VexflowStafflineNoteCalculator(this.rules);
+    if (!MusicSheetCalculator.TextMeasurer) {
+      // the deprecated static one, for apps that use it: with default rules, as an instance's rules would keep that instance in memory
+      MusicSheetCalculator.TextMeasurer = new VexFlowTextMeasurer(new EngravingRules());
+    }
 
     // prepare Vexflow font (doesn't affect Vexflow 1.x). It seems like this has to be done here for now, otherwise it's too slow for the generateImages script.
     //   (first image will have the non-updated font, in this case the Vexflow default Bravura, while we want Gonville here)
@@ -131,7 +135,7 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
 
   protected clearRecreatedObjects(): void {
     super.clearRecreatedObjects();
-    MusicSheetCalculator.stafflineNoteCalculator = new VexflowStafflineNoteCalculator(this.rules);
+    this.stafflineNoteCalculator = new VexflowStafflineNoteCalculator(this.rules);
     // Reset the measure-to-measure carry state of the lyrics/chord symbol elongation calculation:
     // it is rebuilt during each render's width calculation, but without the reset, the trailing
     // overflow of the last lyric measure leaked into the *next* render's first measures
@@ -598,9 +602,12 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
       //   on a line at the same time, on each of the two formats of a render. Restore the value it had before the
       //   first render, snapshotted on the first render - otherwise the dot of e.g. a dotted rest below a dotted note
       //   moved up by a staff space with every re-render.
-      // - delayXShift of delayed ornaments (e.g. a turn between two notes): Ornament.draw() calculates it from the
-      //   distance to the next note on its first draw and keeps it. Unset it, so that the next draw calculates it
+      // - delayXShift of delayed ornaments (e.g. a turn between two notes): Ornament.getRenderXY() calculates it from the
+      //   distance to the next note when it is first called (by draw(), or before, by getExtent()) and keeps it. Unset it, so that the next draw calculates it
       //   for the current layout - otherwise the turn kept its distance of the previous layout, e.g. after a resize.
+      // - the y_shift of articulations and ornaments: GraphicalSlur.placeArticulationsOutside() moves an accent, a fermata or a
+      //   trill at the start or end of a slur beyond it. Restore the value it had before the first render, snapshotted on the
+      //   first render - otherwise a re-render would start from the moved position, in the skyline too.
       for (const voice of voices) {
         for (const tickable of voice.getTickables()) {
           const note: any = tickable as any;
@@ -608,8 +615,11 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
           if (note.osmdInitialXShift === undefined) {
             note.osmdInitialXShift = note.x_shift ?? 0; // first render: snapshot
             for (const modifier of note.modifiers ?? []) {
-              if (modifier.getCategory?.() === "dots") {
+              const category: string = modifier.getCategory?.();
+              if (category === "dots") {
                 modifier.osmdInitialDotShiftY = modifier.dot_shiftY; // first render: snapshot
+              } else if (category === "articulations" || category === "ornaments") {
+                modifier.osmdInitialYShift = modifier.y_shift; // first render: snapshot
               }
             }
           } else {
@@ -622,6 +632,9 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
                 }
               } else if (modifier.getCategory?.() === "ornaments") {
                 modifier.delayXShift = undefined; // a delayed ornament (e.g. turn) caches its x shift on its first draw
+              }
+              if (modifier.osmdInitialYShift !== undefined) { // an articulation's or an ornament's
+                modifier.setYShift(modifier.osmdInitialYShift);
               }
             }
           }
@@ -743,13 +756,13 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
             for (const voiceEntry of staffEntry.graphicalVoiceEntries) {
               if (!voiceEntry.parentVoiceEntry.IsGrace) {
                 if (voiceEntry && voiceEntry.notes && voiceEntry.notes[0] && voiceEntry.notes[0].sourceNote) {// TODO null chaining, TS 3.7
-                  if (voiceEntry.notes[0].sourceNote.PrintObject) { // only respect collision when not invisible
+                  if (voiceEntry.notes[0].sourceNote.isVisible()) { // only respect collision when not invisible
                     collidableVoiceEntries++;
                   }
                 }
               }
               if (voiceEntry && voiceEntry.notes && voiceEntry.notes[0] && voiceEntry.notes[0].sourceNote) {// TODO null chaining, TS 3.7
-                if (voiceEntry.notes[0].sourceNote.isRest() && voiceEntry.notes[0].sourceNote.PrintObject) {
+                if (voiceEntry.notes[0].sourceNote.isRest() && voiceEntry.notes[0].sourceNote.isVisible()) {
                   numberOfRests++; // only align rests if there is actually a rest (which could collide)
                 }
               }
@@ -1216,7 +1229,7 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
   protected layoutVoiceEntry(voiceEntry: VoiceEntry, graphicalNotes: GraphicalNote[], graphicalStaffEntry: GraphicalStaffEntry,
                              hasPitchedNote: boolean): void {
       for (let i: number = 0; i < graphicalNotes.length; i++) {
-        graphicalNotes[i] = MusicSheetCalculator.stafflineNoteCalculator.positionNote(graphicalNotes[i]);
+        graphicalNotes[i] = this.stafflineNoteCalculator.positionNote(graphicalNotes[i]);
       }
   }
 
@@ -1911,15 +1924,28 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
       const startNoteMeasures: GraphicalMeasure[] = startIsClipped ? startStaffLine.Measures : [startMeasure];
       const endNoteMeasures: GraphicalMeasure[] = endIsClipped ? endStaffLine.Measures : [endMeasure];
       const graphicalOctaveShift: VexFlowOctaveShift = new VexFlowOctaveShift(octaveShift, startStaffLine.PositionAndShape);
-      if (!graphicalOctaveShift.startNote) { // fix for rendering range set
-        const startGse: GraphicalStaffEntry = this.findBoundaryNoteEntry(startNoteMeasures);
-        if (!startGse) {
-          return; // couldn't find a start staffentry, don't draw the octave shift
+      let startStaffEntry: GraphicalStaffEntry = startMeasure.findGraphicalStaffEntryFromTimestamp(startTimeStamp);
+      if (!this.hasVexFlowNote(startStaffEntry) && !startIsClipped) {
+        // No note of its staff at its time, e.g. where its voice continues on the other staff of a piano:
+        //   the staves of a system share the x of a time, so borrow the horizontal anchor of another staff's note there,
+        //   while keeping the bracket on its source staff.
+        for (const measure of this.graphicalMusicSheet.MeasureList[measureIndex]) {
+          if (measure.ParentStaffLine?.ParentMusicSystem !== startStaffLine.ParentMusicSystem) {
+            continue; // not drawn, e.g. a hidden part
+          }
+          const entry: GraphicalStaffEntry = measure.findGraphicalStaffEntryFromTimestamp(startTimeStamp);
+          if (this.hasVexFlowNote(entry)) {
+            startStaffEntry = entry;
+            graphicalOctaveShift.startStave = (startMeasure as VexFlowMeasure).getVFStave();
+            break;
+          }
         }
-        graphicalOctaveShift.setStartNote(startGse);
-        if (!graphicalOctaveShift.startNote) {
-          return; // couldn't find a start note, don't draw the octave shift
-        }
+      }
+      if (!this.hasVexFlowNote(startStaffEntry)) {
+        startStaffEntry = this.findBoundaryNoteEntry(startNoteMeasures);
+      }
+      if (!startStaffEntry || !graphicalOctaveShift.setStartNote(startStaffEntry)) {
+        return;
       }
       if (!graphicalOctaveShift.endNote) { // fix for rendering range set
         const endGse: GraphicalStaffEntry = this.findBoundaryNoteEntry(endNoteMeasures, true);
@@ -1934,10 +1960,6 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
         }
       }
       // calculate RelativePosition and Dashes
-      let startStaffEntry: GraphicalStaffEntry = startMeasure.findGraphicalStaffEntryFromTimestamp(startTimeStamp);
-      if (!this.hasVexFlowNote(startStaffEntry)) { // fix for rendering range set
-        startStaffEntry = this.findBoundaryNoteEntry(startNoteMeasures);
-      }
       let endStaffEntry: GraphicalStaffEntry = endMeasure.findGraphicalStaffEntryFromTimestamp(endTimeStamp);
       if (!this.hasVexFlowNote(endStaffEntry) && endTimeStamp) {
         // endTimeStamp can be undefined for an unterminated octave-shift (start without stop,
@@ -1955,8 +1977,6 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
       if (!this.hasVexFlowNote(endStaffEntry)) { // fix for rendering range set
         endStaffEntry = this.findBoundaryNoteEntry(endNoteMeasures, true);
       }
-      graphicalOctaveShift.setStartNote(startStaffEntry);
-
       if (endStaffLine !== startStaffLine) {
         graphicalOctaveShift.endsOnDifferentStaffLine = true;
         let lastMeasureOfFirstShift: GraphicalMeasure = this.findLastStafflineMeasure(startStaffLine);
@@ -2197,8 +2217,13 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
             let currentCount: number = 1;
             for (let i: number = startStaffLine.ParentMusicSystem.Id; i < endStaffLine.ParentMusicSystem.Id; i++) {
               const nextPedalMusicSystem: MusicSystem = this.musicSystems[i + 1];
-              const nextPedalStaffline: StaffLine = nextPedalMusicSystem.StaffLines[staffIndex];
-              const nextPedalFirstMeasure: GraphicalMeasure = nextPedalStaffline.Measures[0];
+              let nextPedalStaffline: StaffLine; // not always = nextPedalMusicSystem.StaffLines[staffIndex], e.g. when first instrument invisible
+              for (const staffline of nextPedalMusicSystem.StaffLines) {
+                if (staffline.ParentStaff.idInMusicSheet === staffIndex) {
+                  nextPedalStaffline = staffline;
+                  break;
+                }
+              }
               let nextOpenEnd: boolean = false;
               let nextChangeEndFromParent: boolean = false;
               if (currentCount < systemsInBetweenCount) {
@@ -2207,6 +2232,10 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
                 nextChangeEndFromParent = true;
               }
               currentCount++;
+              if (!nextPedalStaffline) { // shouldn't happen
+                continue;
+              }
+              const nextPedalFirstMeasure: GraphicalMeasure = nextPedalStaffline.Measures[0];
               // pedal starts on the first measure
               const nextPedal: VexFlowPedal = new VexFlowPedal(pedal, nextPedalFirstMeasure.PositionAndShape, true, nextOpenEnd);
               graphicalPedal.setEndsStave(endMeasure, endTimeStamp);
@@ -2785,15 +2814,15 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
     }
     const fontHeightUnits: number = 1.6; // staverepetition.js draws the text with a 12pt (16px) font
     let textWidthUnits: number = 0;
-    if (text.length > 0 && this.rules.VexFlowTextFontFamily && MusicSheetCalculator.TextMeasurer.computeTextWidthInCssFont) {
+    if (text.length > 0 && this.rules.VexFlowTextFontFamily && this.rules.TextMeasurer.computeTextWidthInCssFont) {
       // measure in the CSS font that staverepetition.js draws with, whose family can also be a generic family or a list
       const measureFontSize: number = 20;
-      textWidthUnits = MusicSheetCalculator.TextMeasurer.computeTextWidthInCssFont(
+      textWidthUnits = this.rules.TextMeasurer.computeTextWidthInCssFont(
         text, `italic bold ${measureFontSize}px ${this.rules.VexFlowTextFontFamily}`) / measureFontSize * fontHeightUnits;
     } else if (text.length > 0) {
       // measure with the same font family string ("times") that staverepetition.js draws with,
       //   so that the measured width matches the drawn width even if the font falls back to another one
-      textWidthUnits = MusicSheetCalculator.TextMeasurer.computeTextWidthToHeightRatio(
+      textWidthUnits = this.rules.TextMeasurer.computeTextWidthToHeightRatio(
         text, Fonts.TimesNewRoman, FontStyles.BoldItalic, "times") * fontHeightUnits;
     }
     const glyphWidthUnits: number = 2.4; // coda/segno glyph width (plus the 12px gap after the text for symbol_x)
@@ -2949,12 +2978,8 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
         }
       }
     }
-    if (this.rules.AlwaysSetPreferredSkyBottomLineBackendAutomatically) {
-      this.rules.setPreferredSkyBottomLineBackendAutomatically(numMeasures);
-    }
     if (numMeasures >= this.rules.SkyBottomLineBatchMinMeasures) {
-      const calculator: SkyBottomLineBatchCalculator = new SkyBottomLineBatchCalculator(
-        staffLines, this.rules.PreferredSkyBottomLineBatchCalculatorBackend);
+      const calculator: SkyBottomLineBatchCalculator = new SkyBottomLineBatchCalculator(staffLines);
       calculator.calculateLines();
     } else {
       for (const staffLine of staffLines) {
@@ -3018,10 +3043,6 @@ export class VexFlowMusicSheetCalculator extends MusicSheetCalculator {
                                                                                this.rules.StaffHeight);
 
       graphicalStaffEntry.LyricsEntries.push(graphicalLyricEntry);
-
-      // create corresponding GraphicalLabel
-      const graphicalLabel: GraphicalLabel = graphicalLyricEntry.GraphicalLabel;
-      graphicalLabel.setLabelPositionAndShapeBorders();
 
       if (lyricsEntry.Word) {
         const lyricsEntryIndex: number = lyricsEntry.Word.Syllables.indexOf(lyricsEntry);
