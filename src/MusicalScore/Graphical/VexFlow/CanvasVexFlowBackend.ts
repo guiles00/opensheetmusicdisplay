@@ -102,9 +102,15 @@ export class CanvasVexFlowBackend extends VexFlowBackend {
         }
     }
 
-    /** Resizing a canvas clears its bitmap. Lazy/incremental rendering grows the canvas as it appends
-     *  batches, so snapshot the current pixels and redraw them after resizing. For a normal render the
-     *  canvas is still empty here, so this is effectively a no-op. */
+    /**
+     * Resizes the canvas, keeping what is drawn on it. Resizing a canvas clears its bitmap, and incremental rendering
+     * (renderNext) grows the canvas as it appends batches: downwards on the endless page, to the right with
+     * RenderSingleHorizontalStaffline. So snapshot the current pixels, redraw them after resizing, and fill the rest of
+     * the canvas with the page background (if set). For a normal render the canvas is still empty here, and clear()
+     * fills it afterwards, so this is effectively a no-op.
+     * @param width the new width in pixels
+     * @param height the new height in pixels
+     */
     public resize(width: number, height: number): void {
         const canvas: any = this.canvas;
         let snapshot: any;
@@ -115,16 +121,29 @@ export class CanvasVexFlowBackend extends VexFlowBackend {
             snapshot.getContext("2d").drawImage(canvas, 0, 0);
         }
         super.resize(width, height);
-        if (snapshot) {
+        if (canvas && (snapshot || this.rules.PageBackgroundColor)) {
             const ctx2d: any = canvas.getContext("2d");
             ctx2d.save();
             ctx2d.setTransform(1, 0, 0, 1, 0, 0); // work in raw device pixels
             if (this.rules.PageBackgroundColor) {
-                // the grown (transparent) area below the preserved content needs the page background
+                // The grown (transparent) area right of and below the kept pixels needs the page background.
+                //   Without a snapshot, that's the whole canvas, e.g. one that was 0 wide (the page of a single horizontal
+                //   staffline that no batch has reached yet). The corner is filled once, with the area below, and the kept
+                //   pixels not at all, so that a semi-transparent color doesn't get more opaque there.
+                const keptWidth: number = Math.min(snapshot?.width ?? 0, canvas.width);
+                const keptHeight: number = Math.min(snapshot?.height ?? 0, canvas.height);
                 ctx2d.fillStyle = this.rules.PageBackgroundColor;
-                ctx2d.fillRect(0, snapshot.height, canvas.width, canvas.height - snapshot.height);
+                ctx2d.fillRect(keptWidth, 0, canvas.width - keptWidth, keptHeight); // right of them
+                ctx2d.fillRect(0, keptHeight, canvas.width, canvas.height - keptHeight); // below them, including the corner
             }
-            ctx2d.drawImage(snapshot, 0, 0); // restore the previously rendered batches at the top
+            if (snapshot) {
+                ctx2d.drawImage(snapshot, 0, 0); // restore the previously rendered batches at the top left
+                // Release the snapshot's pixels now, not when it's garbage collected: each batch copies the whole canvas, and in
+                //   Node (node-canvas frees them only after the current task), the copies of a loop of renderNext() calls, like
+                //   renderRemaining(), piled up, e.g. to 4 GB for ActorPreludeSample on a single horizontal staffline.
+                snapshot.width = 0;
+                snapshot.height = 0;
+            }
             ctx2d.restore();
         }
     }
@@ -174,14 +193,21 @@ export class CanvasVexFlowBackend extends VexFlowBackend {
         return undefined; // can't return dom node like with SVG
     }
 
-    public renderLine(start: PointF2D, stop: PointF2D, color: string = "#FF0000FF", lineWidth: number = 2, id?: string): Node {
+    public renderLine(start: PointF2D, stop: PointF2D, color: string = "#FF0000FF", lineWidth: number = 2, id?: string,
+                      dashes?: number[]): Node {
         const oldStyle: string | CanvasGradient | CanvasPattern = this.CanvasRenderingCtx.strokeStyle;
         this.CanvasRenderingCtx.strokeStyle = color;
+        if (dashes) {
+            this.CanvasRenderingCtx.setLineDash(dashes);
+        }
         this.CanvasRenderingCtx.beginPath();
         this.CanvasRenderingCtx.moveTo(start.x, start.y);
         this.CanvasRenderingCtx.lineTo(stop.x, stop.y);
         this.CanvasRenderingCtx.stroke();
         this.CanvasRenderingCtx.strokeStyle = oldStyle;
+        if (dashes) {
+            this.CanvasRenderingCtx.setLineDash([]);
+        }
         return undefined; // can't return svg dom node
     }
 

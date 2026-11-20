@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { OpenSheetMusicDisplay } from "../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { ISystemLifecycleEvent } from "../../src/OpenSheetMusicDisplay/SystemVirtualizationController";
 import { generateLargePianoScore } from "../performance/LargeScoreFixtures";
@@ -169,9 +169,13 @@ describe("System virtualization lookup", () => {
     it("writes immediately when the whole score is outside the document", async () => {
         const container: HTMLDivElement = document.createElement("div");
         container.style.width = "900px";
+        // render() skips a container without a width (e.g. one outside the document), so the score is rendered in the
+        //   document and taken out of it before the write
+        document.body.appendChild(container);
         const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container, { autoResize: false });
         await osmd.load(generateLargePianoScore({ measures: 8 }));
         osmd.render();
+        container.remove();
         const note: VexFlowGraphicalNote = osmd.GraphicSheet.MeasureList[0][0].staffEntries[0]
             .graphicalVoiceEntries[0].notes[0] as VexFlowGraphicalNote;
         note.setOpacity(0.5);

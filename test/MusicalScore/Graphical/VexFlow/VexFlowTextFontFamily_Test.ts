@@ -1,6 +1,7 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { OpenSheetMusicDisplay } from "../../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { PlacementEnum } from "../../../../src/MusicalScore/VoiceData/Expressions/AbstractExpression";
+import { ITextMeasurer } from "../../../../src/MusicalScore/Interfaces/ITextMeasurer";
 import { TestUtils } from "../../../Util/TestUtils";
 
 /**
@@ -38,7 +39,7 @@ describe("VexFlowTextFontFamily", (): void => {
         osmd.EngravingRules.NewSystemAtXMLNewSystemAttribute = true; // for the system breaks of the last sample
         const samples: [string, string[]][] = [
             ["test_rehearsal_marks_simple_one_measure.musicxml", ["A"]], // rehearsal mark
-            ["test_repeat_da_capo_in_second_ending.musicxml", ["2", "D.C."]], // ending, repetition instruction
+            ["test_repeat_da_capo_in_second_ending.musicxml", ["2.", "D.C."]], // ending (its text), repetition instruction
             ["test_metronome_beside_tempo_text.musicxml", [" = 88"]], // metronome mark
             ["test_octaveshift_stop_missing_1696.musicxml", ["8", "va"]], // octave shift
             ["test_fingering_Simple_Chords_Treble_Bass.musicxml", ["1", "5"]], // fingerings left and above/below
@@ -65,16 +66,32 @@ describe("VexFlowTextFontFamily", (): void => {
         await osmd.load(TestUtils.getScore("test_repeat_da_capo_al_coda_after_repeat.musicxml"));
         osmd.render();
         expect(Number(text("D.C. al").getAttribute("y"))).to.be.lessThan(Number(text("To").getAttribute("y")));
-        // a custom ITextMeasurer without the optional computeTextWidthInCssFont() (load() sets OSMD's own again)
-        osmd.EngravingRules.TextMeasurer.computeTextWidthInCssFont = undefined;
+        // a custom ITextMeasurer without the optional computeTextWidthInCssFont()
+        const osmdTextMeasurer: ITextMeasurer = osmd.EngravingRules.TextMeasurer;
+        osmd.EngravingRules.TextMeasurer = {
+            fontSize: osmdTextMeasurer.fontSize,
+            fontSizeStandard: osmdTextMeasurer.fontSizeStandard,
+            computeTextWidthToHeightRatio: osmdTextMeasurer.computeTextWidthToHeightRatio.bind(osmdTextMeasurer),
+            setFontSize: osmdTextMeasurer.setFontSize.bind(osmdTextMeasurer),
+        };
         expect((): void => osmd.render()).not.to.throw();
+        osmd.EngravingRules.TextMeasurer = osmdTextMeasurer; // load() keeps the measurer that is set
 
         // A bend reserves its text width plus 3px, with the text in the middle (VexFlow's Bend.updateWidth()),
         //   so the texts of two consecutive bends are 3px apart. Compared by the text advance, which is what is measured.
-        await osmd.load(TestUtils.getScore("OSMD_Function_Test_Tablature_Multibends.musicxml"));
+        // Two upward segments, labeled with the total bend: "1/2", then "1 1/2".
+        await osmd.load(`<?xml version="1.0"?><score-partwise version="4.0">
+            <part-list><score-part id="P1"><part-name>Guitar</part-name></score-part></part-list>
+            <part id="P1"><measure number="1"><attributes><divisions>1</divisions>
+            <time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>TAB</sign><line>5</line></clef>
+            <staff-details><staff-lines>6</staff-lines></staff-details></attributes>
+            <note><pitch><step>E</step><octave>3</octave></pitch><duration>4</duration><type>whole</type>
+            <notations><technical><string>4</string><fret>2</fret>
+            <bend><bend-alter>1</bend-alter></bend><bend><bend-alter>2</bend-alter></bend>
+            </technical></notations></note></measure></part></score-partwise>`);
         osmd.render();
-        const full: SVGTextElement = text("Full");
-        const gap: number = Number(text("1/4").getAttribute("x")) - Number(full.getAttribute("x")) - full.getComputedTextLength();
+        const first: SVGTextElement = text("1/2");
+        const gap: number = Number(text("1 1/2").getAttribute("x")) - Number(first.getAttribute("x")) - first.getComputedTextLength();
         expect(gap).to.be.closeTo(3, 0.2);
     });
 });

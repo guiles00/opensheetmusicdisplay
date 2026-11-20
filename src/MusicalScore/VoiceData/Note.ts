@@ -66,6 +66,7 @@ export class Note {
     private beam: Beam;
     private tuplet: Tuplet;
     private tie: Tie;
+    private noteTies: Tie[] = [];
     private glissando: Glissando;
     private slurs: Slur[] = [];
     private playbackInstrumentId: string = undefined;
@@ -204,11 +205,24 @@ export class Note {
     public set NoteGlissando(value: Glissando) {
         this.glissando = value;
     }
+    /** The tie added last, when this note belongs to several ties or techniques. */
     public get NoteTie(): Tie {
         return this.tie;
     }
     public set NoteTie(value: Tie) {
         this.tie = value;
+        if (!value) {
+            this.noteTies.length = 0;
+        } else if (!this.noteTies.includes(value)) {
+            this.noteTies.push(value);
+        }
+    }
+    /** All ties/techniques containing this note. A technique endpoint can also start a sustain.
+     * NoteTie returns the tie added last; graphical tie creation uses this complete list.
+     * Clearing NoteTie also clears these memberships for outgoing graphical tie creation.
+     */
+    public get NoteTies(): readonly Tie[] {
+        return this.noteTies;
     }
     public get NoteSlurs(): Slur[] {
         return this.slurs;
@@ -228,11 +242,14 @@ export class Note {
     public set PrintObject(value: boolean) {
         this.printObject = value;
     }
-    /** Whether the note is drawn: it's not hidden (PrintObject), or EngravingRules.RenderHiddenNotes draws hidden notes too.
+    /** Whether the note is drawn: it's not hidden (PrintObject), or EngravingRules.RenderHiddenNotes draws hidden notes too,
+     *  and its voice isn't hidden in its shown instrument (Voice.isHiddenInShownInstrument(), not drawn with RenderHiddenNotes
+     *  either). The notes of a hidden instrument stay visible: the instrument isn't drawn as a whole.
      *  Use this instead of PrintObject to decide what to draw.
      *  This doesn't change with GraphicalNote.setVisible(): GraphicalNote.isVisible() also checks that. */
     public isVisible(): boolean {
-        return this.printObject || this.sourceMeasure?.Rules?.RenderHiddenNotes === true;
+        return (this.printObject || this.sourceMeasure?.Rules?.RenderHiddenNotes === true) &&
+            !this.voiceEntry?.ParentVoice?.isHiddenInShownInstrument();
     }
     /** Whether this note's own notehead is hidden (e.g. print-object="no" or notehead "none") but there is a
      * visible note on the same staff line in another voice at the same staff entry - i.e. a unison whose visible
@@ -249,10 +266,14 @@ export class Note {
 
     /** The visible note in another voice whose notehead this note shares (see
      * {@link sharesNoteheadWithVisibleUnisonNote}), or undefined if this note's own notehead is visible or
-     * there is no such note. */
+     * there is no such note. A note of a hidden voice (Voice.isHiddenInShownInstrument()) shares none: it isn't drawn
+     * at all, not even its stem, beam or tie at another voice's notehead. */
     public visibleUnisonNoteSharingNotehead(): Note {
         if (this.isVisible() && this.notehead?.Shape !== NoteHeadShape.NONE) {
             return undefined; // this note's own notehead is visible, nothing to share
+        }
+        if (this.voiceEntry?.ParentVoice?.isHiddenInShownInstrument()) {
+            return undefined;
         }
         // Grace notes are ornaments before a main note, not a note sounding simultaneously - they share their
         // staff entry with that main note, so don't treat that as a unison (would falsely keep their stem).

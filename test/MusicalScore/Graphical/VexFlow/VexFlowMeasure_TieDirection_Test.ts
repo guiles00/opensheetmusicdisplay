@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-expressions */
-import {expect} from "chai";
+import { expect } from "vitest";
 import {IXmlElement} from "../../../../src/Common/FileIO/Xml";
 import {GraphicalMusicSheet} from "../../../../src/MusicalScore/Graphical/GraphicalMusicSheet";
 import {MusicSheet} from "../../../../src/MusicalScore/MusicSheet";
@@ -9,7 +9,7 @@ import {MusicSheetReader} from "../../../../src/MusicalScore/ScoreIO/MusicSheetR
 import {TestUtils} from "../../../Util/TestUtils";
 
 describe("VexFlow Measure - Automatic tie direction", () => {
-   it("keeps clear ties shallow and flips the lower tie away from notes", (done: Mocha.Done) => {
+   it("keeps clear ties shallow and flips the lower tie away from notes", () => {
       const filename: string = "test_tie_voice_order_k310.musicxml";
       const score: Document = TestUtils.getScore(filename);
       expect(score).to.not.be.undefined;
@@ -37,10 +37,9 @@ describe("VexFlow Measure - Automatic tie direction", () => {
       (secondMeasure as any).placeTieAroundNotes(lowerTie);
       expect(lowerTie.direction).to.equal(1);
       expect(lowerTie.render_options.cp1).to.equal(8);
-      done();
    });
 
-   it("preserves a tie direction specified by MusicXML", (done: Mocha.Done) => {
+   it("preserves a tie direction specified by MusicXML", () => {
       const filename: string = "test_tie_voice_order_k310.musicxml";
       const score: Document = TestUtils.getScore(filename).cloneNode(true) as Document;
       const firstStart: Element = Array.from(score.getElementsByTagName("tied"))
@@ -57,6 +56,5 @@ describe("VexFlow Measure - Automatic tie direction", () => {
       expect(tie.directionFromXml).to.equal(true);
       (measure as any).placeTieAroundNotes(tie);
       expect(tie.direction).to.equal(1);
-      done();
    });
 });

@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { TestUtils } from "../../Util/TestUtils";
 import JSZip from "jszip";
@@ -15,7 +15,8 @@ import { GraphicalStaffEntry } from "../../../src/MusicalScore/Graphical/Graphic
 import { GraphicalNote } from "../../../src/MusicalScore/Graphical/GraphicalNote";
 import { GraphicalLabel } from "../../../src/MusicalScore/Graphical/GraphicalLabel";
 import { Fraction } from "../../../src/Common/DataObjects/Fraction";
-import { AccidentalEnum, Pitch } from "../../../src/Common/DataObjects/Pitch";
+import { AccidentalEnum, NoteEnum, Pitch } from "../../../src/Common/DataObjects/Pitch";
+import { VerticalSourceStaffEntryContainer } from "../../../src/MusicalScore/VoiceData/VerticalSourceStaffEntryContainer";
 import { SourceStaffEntry } from "../../../src/MusicalScore/VoiceData/SourceStaffEntry";
 import { GraphicalSlur } from "../../../src/MusicalScore/Graphical/GraphicalSlur";
 import { BoundingBox } from "../../../src/MusicalScore/Graphical/BoundingBox";
@@ -24,22 +25,20 @@ import { PointF2D } from "../../../src/Common/DataObjects/PointF2D";
 describe("OpenSheetMusicDisplay Main Export", () => {
     let container1: HTMLElement;
 
-    it("no container", (done: Mocha.Done) => {
+    it("no container", () => {
         expect(() => {
             return new OpenSheetMusicDisplay(undefined);
         }).to.throw(/container/);
-        done();
     });
 
-    it("container", (done: Mocha.Done) => {
+    it("container", () => {
         const div: HTMLElement = TestUtils.getDivElement(document);
         expect(() => {
             return new OpenSheetMusicDisplay(div);
         }).to.not.throw(Error);
-        done();
     });
 
-    it("multiple instances", () => {
+    it("multiple instances", async () => {
         const musicSheetFragmentContainer: HTMLElement = TestUtils.getDivElement(document);
         const fullMusicSheetContainer: HTMLElement = TestUtils.getDivElement(document);
 
@@ -69,93 +68,66 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         const musicSheet: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
         const musicSheetXML: string = new XMLSerializer().serializeToString(musicSheet);
 
-        return musicSheetFragment.load(musicSheetXML)
-                            .then(() => {
-                                musicSheetFragment.render();
+        await musicSheetFragment.load(musicSheetXML);
+        musicSheetFragment.render();
 
-                                return fullMusicSheet.load(musicSheetXML);
-                            })
-                            .then(() => {
-                                fullMusicSheet.render();
+        await fullMusicSheet.load(musicSheetXML);
+        fullMusicSheet.render();
 
-                                // Verify that the music sheet fragment has its options set correctly.
-                                expect(musicSheetFragment.Sheet.Rules.RenderComposer).to.equal(musicSheetFragmentOptions.drawComposer);
-                                expect(musicSheetFragment.Sheet.Rules.RenderFingerings).to.equal(musicSheetFragmentOptions.drawFingerings);
-                                expect(musicSheetFragment.Sheet.Rules.RenderLyricist).to.equal(musicSheetFragmentOptions.drawLyricist);
-                                expect(musicSheetFragment.Sheet.Rules.RenderPartAbbreviations).to.equal(musicSheetFragmentOptions.drawPartAbbreviations);
-                                expect(musicSheetFragment.Sheet.Rules.RenderPartNames).to.equal(musicSheetFragmentOptions.drawPartNames);
-                                expect(musicSheetFragment.Sheet.Rules.RenderSubtitle).to.equal(musicSheetFragmentOptions.drawSubtitle);
-                                expect(musicSheetFragment.Sheet.Rules.RenderTitle).to.equal(musicSheetFragmentOptions.drawTitle);
-                                expect(musicSheetFragment.Sheet.Rules.MaxMeasureToDrawIndex).to.equal(musicSheetFragmentOptions.drawUpToMeasureNumber - 1);
+        // Verify that the music sheet fragment has its options set correctly.
+        expect(musicSheetFragment.Sheet.Rules.RenderComposer).to.equal(musicSheetFragmentOptions.drawComposer);
+        expect(musicSheetFragment.Sheet.Rules.RenderFingerings).to.equal(musicSheetFragmentOptions.drawFingerings);
+        expect(musicSheetFragment.Sheet.Rules.RenderLyricist).to.equal(musicSheetFragmentOptions.drawLyricist);
+        expect(musicSheetFragment.Sheet.Rules.RenderPartAbbreviations).to.equal(musicSheetFragmentOptions.drawPartAbbreviations);
+        expect(musicSheetFragment.Sheet.Rules.RenderPartNames).to.equal(musicSheetFragmentOptions.drawPartNames);
+        expect(musicSheetFragment.Sheet.Rules.RenderSubtitle).to.equal(musicSheetFragmentOptions.drawSubtitle);
+        expect(musicSheetFragment.Sheet.Rules.RenderTitle).to.equal(musicSheetFragmentOptions.drawTitle);
+        expect(musicSheetFragment.Sheet.Rules.MaxMeasureToDrawIndex).to.equal(musicSheetFragmentOptions.drawUpToMeasureNumber - 1);
 
-                                // Verify that the full music sheet has its options set correctly.
-                                expect(fullMusicSheet.Sheet.Rules.RenderComposer).to.not.equal(musicSheetFragmentOptions.drawComposer);
-                                expect(fullMusicSheet.Sheet.Rules.RenderFingerings).to.not.equal(musicSheetFragmentOptions.drawFingerings);
-                                expect(fullMusicSheet.Sheet.Rules.RenderLyricist).to.not.equal(musicSheetFragmentOptions.drawLyricist);
-                                expect(fullMusicSheet.Sheet.Rules.RenderPartAbbreviations).to.not.equal(musicSheetFragmentOptions.drawPartAbbreviations);
-                                expect(fullMusicSheet.Sheet.Rules.RenderPartNames).to.not.equal(musicSheetFragmentOptions.drawPartNames);
-                                expect(fullMusicSheet.Sheet.Rules.RenderSubtitle).to.not.equal(musicSheetFragmentOptions.drawSubtitle);
-                                expect(fullMusicSheet.Sheet.Rules.RenderTitle).to.not.equal(musicSheetFragmentOptions.drawTitle);
-                                expect(fullMusicSheet.Sheet.Rules.MaxMeasureToDrawIndex).to.equal(fullMusicSheetOptions.drawUpToMeasureNumber - 1);
-                            });
+        // Verify that the full music sheet has its options set correctly.
+        expect(fullMusicSheet.Sheet.Rules.RenderComposer).to.not.equal(musicSheetFragmentOptions.drawComposer);
+        expect(fullMusicSheet.Sheet.Rules.RenderFingerings).to.not.equal(musicSheetFragmentOptions.drawFingerings);
+        expect(fullMusicSheet.Sheet.Rules.RenderLyricist).to.not.equal(musicSheetFragmentOptions.drawLyricist);
+        expect(fullMusicSheet.Sheet.Rules.RenderPartAbbreviations).to.not.equal(musicSheetFragmentOptions.drawPartAbbreviations);
+        expect(fullMusicSheet.Sheet.Rules.RenderPartNames).to.not.equal(musicSheetFragmentOptions.drawPartNames);
+        expect(fullMusicSheet.Sheet.Rules.RenderSubtitle).to.not.equal(musicSheetFragmentOptions.drawSubtitle);
+        expect(fullMusicSheet.Sheet.Rules.RenderTitle).to.not.equal(musicSheetFragmentOptions.drawTitle);
+        expect(fullMusicSheet.Sheet.Rules.MaxMeasureToDrawIndex).to.equal(fullMusicSheetOptions.drawUpToMeasureNumber - 1);
     });
 
-    it("load MXL from string", (done: Mocha.Done) => {
+    it("load MXL from string", async () => {
         const mxl: string = TestUtils.getMXL("Mozart_Clarinet_Quintet_Excerpt.mxl");
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(mxl).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                done();
-            },
-            done
-        );
+        await opensheetmusicdisplay.load(mxl);
+        opensheetmusicdisplay.render();
     });
 
-    it("load invalid MXL from string", (done: Mocha.Done) => {
+    it("load invalid MXL from string", async () => {
         const mxl: string = "\x50\x4b\x03\x04";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(mxl).then(
-            (_: {}) => {
-                done(new Error("Corrupted MXL appears to be loaded correctly"));
-            },
-            (exc: Error) => {
-                if (exc.message.toLowerCase().match(/invalid/)) {
-                    done();
-                } else {
-                    done(new Error("Unexpected error: " + exc.message));
-                }
-            }
-        );
+        const logged: string[] = TestUtils.catchLogs();
+        await expect(opensheetmusicdisplay.load(mxl), "corrupted MXL").rejects.toThrow(/invalid/i);
+        expect(logged.length, "errors logged").to.be.greaterThan(0);
+        expect(logged.filter((message: string) => !message.includes("Corrupted zip")), "other messages").to.deep.equal([]);
     });
 
-    it("load XML string", (done: Mocha.Done) => {
+    it("load XML string", async () => {
         const score: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
         const xml: string = new XMLSerializer().serializeToString(score);
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(xml).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                done();
-            },
-            done
-        );
+        await opensheetmusicdisplay.load(xml);
+        opensheetmusicdisplay.render();
     });
 
-    it("load XML Document", (done: Mocha.Done) => {
+    it("load XML Document", async () => {
         const score: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(score).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                done();
-            },
-            done
-        );
+        await opensheetmusicdisplay.load(score);
+        opensheetmusicdisplay.render();
     });
 
     it("updates and restores the fork's BPM-driven tempo label without replacing the SVG", async () => {
@@ -332,36 +304,20 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         expect(startBox.RelativePosition.y + startBox.BorderBottom).to.be.lessThan(slurYAt(startBox.RelativePosition.x) - 0.3);
     });
 
-    it("load missing file by URL", (done: Mocha.Done) => {
-        // e.g. a typo in the path: the karma server answers 404, like any web server
+    it("load missing file by URL", async () => {
+        // e.g. a typo in the path: the test server answers 404, like any web server
         const url: string = "base/test/data/does_not_exist.musicxml";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(url).then(
-            (_: {}) => {
-                done(new Error("A missing file appears to be loaded correctly"));
-            },
-            (exc: Error) => {
-                if (exc.message.match(/404/)) {
-                    done();
-                } else {
-                    done(new Error("Unexpected error: " + exc.message));
-                }
-            }
-        );
+        await expect(opensheetmusicdisplay.load(url), "a missing file").rejects.toThrow(/404/);
     });
 
-    it("load MXL Document by URL", (done: Mocha.Done) => {
+    it("load MXL Document by URL", async () => {
         const url: string = "base/test/data/Mozart_Clarinet_Quintet_Excerpt.mxl";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(url).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                done();
-            },
-            done
-        );
+        await opensheetmusicdisplay.load(url);
+        opensheetmusicdisplay.render();
     });
 
     it("uses tempTitle as the title of a score without one, also for a Blob, an MXL file or a URL", async () => {
@@ -406,6 +362,9 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         const zip: JSZip = new JSZip();
         zip.file("META-INF/container.xml", "<container><rootfiles><rootfile full-path='score.xml'/></rootfiles></container>");
         zip.file("score.xml", doctype + scorePartwise);
+        const zipWithNewline: JSZip = new JSZip(); // (was taken for UTF-16, as it doesn't start with "<")
+        zipWithNewline.file("META-INF/container.xml", "<container><rootfiles><rootfile full-path='score.xml'/></rootfiles></container>");
+        zipWithNewline.file("score.xml", "\n" + scorePartwise);
         const contents: [string, string | Blob][] = [
             ["<!DOCTYPE", doctype + scorePartwise],
             ["<score-partwise>", scorePartwise],
@@ -413,6 +372,7 @@ describe("OpenSheetMusicDisplay Main Export", () => {
             ["byte order mark and newline", "\uFEFF\n" + doctype + "\n" + scorePartwise],
             ["Blob", new Blob([doctype + scorePartwise])],
             ["MXL Blob", await zip.generateAsync({type: "blob"})],
+            ["MXL Blob, score file starting with a newline", await zipWithNewline.generateAsync({type: "blob"})],
             ["URL", URL.createObjectURL(new Blob([scorePartwise]))],
         ];
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
@@ -431,88 +391,275 @@ describe("OpenSheetMusicDisplay Main Export", () => {
         expect(xmlReads, "calls of OnXMLRead").to.equal(contents.length);
     });
 
-    it("load invalid URL", (done: Mocha.Done) => {
-        const url: string = "https://www.afjkhfjkauu2ui3z2uiu.com";
+    it("load invalid URL", async () => {
+        // port 1 is one of the fetch standard's bad ports, which browsers never connect to: the load fails at once and
+        //   without the network (a made-up domain needed a DNS lookup)
+        const url: string = "http://127.0.0.1:1/does_not_exist.musicxml";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(url).then(
-            (_: {}) => {
-                done(new Error("Invalid URL appears to be loaded correctly"));
-            },
-            (exc: Error) => {
-                if (exc.message.toLowerCase().match(/url/)) {
-                    done();
-                } else {
-                    done(new Error("Unexpected error: " + exc.message));
-                }
-            }
-        );
+        await expect(opensheetmusicdisplay.load(url), "an invalid URL").rejects.toThrow(/url/i);
     });
 
-    it("load invalid XML string", (done: Mocha.Done) => {
+    it("load invalid XML string", async () => {
         const xml: string = "<?xml";
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
-        opensheetmusicdisplay.load(xml).then(
-            (_: {}) => {
-                done(new Error("Corrupted XML appears to be loaded correctly"));
-            },
-            (exc: Error) => {
-                if (exc.message.toLowerCase().match(/partwise/)) {
-                    done();
-                } else {
-                    done(new Error("Unexpected error: " + exc.message));
-                }
-            }
-        );
+        const logged: string[] = TestUtils.catchLogs();
+        await expect(opensheetmusicdisplay.load(xml), "corrupted XML").rejects.toThrow(/XML is malformed.* 1\b/);
+        expect(logged).to.deep.equal([]);
     });
 
-    it("render without loading", (done: Mocha.Done) => {
+    it("load XML that isn't partwise MusicXML", async () => {
+        const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+        const logged: string[] = TestUtils.catchLogs();
+        await expect(opensheetmusicdisplay.load("<score-timewise/>"), "timewise MusicXML").rejects.toThrow(/partwise/i);
+        expect(logged).to.deep.equal(["Could not parse MusicXML, no valid partwise element found"]);
+    });
+
+    describe("load() says what went wrong, always by rejecting", () => {
+        const validXml: string = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>Black and White</work-title></work>
+  <part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+  <part id="P1"><measure number="1"><attributes><divisions>1</divisions></attributes>
+    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part>
+</score-partwise>`;
+        /** The outcome of load(): "resolved", "rejected: <message>", or "threw: <message>" if load() threw instead of returning a promise. */
+        async function loadOutcome(osmd: OpenSheetMusicDisplay, content: string | Document | Blob): Promise<string> {
+            let promise: Promise<{}>;
+            try {
+                promise = osmd.load(content);
+            } catch (error) {
+                return "threw: " + error.message;
+            }
+            return promise.then((): string => "resolved", (error: Error): string => "rejected: " + error.message);
+        }
+
+        it("malformed XML is rejected with the XML parser's line and column, instead of loading the score up to the error", async () => {
+            // an unescaped "&" in line 3, column 28. Chrome's document for it still has <score-partwise> as its root, without parts.
+            const malformedXml: string = validXml.replace("Black and White", "Black & White");
+            const contents: [string, string | Document | Blob][] = [
+                ["string", malformedXml],
+                ["Blob", new Blob([malformedXml])],
+                ["Document", new DOMParser().parseFromString(malformedXml, "application/xml")],
+            ];
+            const logged: string[] = TestUtils.catchLogs();
+            for (const [name, content] of contents) {
+                const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+                // Chrome: "error on line 3 at column 28: ...", Firefox: "XML Parsing Error: not well-formed Line Number 3, Column 28"
+                expect(await loadOutcome(osmd, content), name).to.match(/^rejected: OpenSheetMusicDisplay: The XML is malformed: .*\b3\b.*\b28\b/);
+                expect(osmd.Sheet, name + ": sheet").to.equal(undefined);
+            }
+            expect(logged).to.deep.equal([]);
+            const validOsmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            expect(await loadOutcome(validOsmd, validXml), "the same score without the error").to.equal("resolved");
+        });
+
+        it("an error while creating the graphic of an XML string or Document is a rejection, not a throw, and leaves no sheet", async () => {
+            const contents: [string, string | Document | Blob][] = [
+                ["string", validXml],
+                ["Document", new DOMParser().parseFromString(validXml, "application/xml")],
+                ["Blob", new Blob([validXml])],
+            ];
+            for (const [name, content] of contents) {
+                const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+                osmd.updateGraphic = (): void => { throw new Error("no graphic"); };
+                expect(await loadOutcome(osmd, content), name).to.equal("rejected: no graphic");
+                expect(osmd.Sheet, name + ": no sheet without a graphic").to.equal(undefined);
+                expect(osmd.GraphicSheet, name + ": graphic").to.equal(undefined);
+            }
+        });
+
+        it("a note whose pitch step isn't one of A to G is left out, with an error that names the value, the measure and the part", async () => {
+            // "toString": NoteEnum["toString"] is defined (an object's method), so a lookup in the enum doesn't find it invalid
+            const badStepXml: string = validXml.replace(/<note>.*<\/note>/,
+                "<note><pitch><step>toString</step><octave>4</octave></pitch><duration>2</duration><type>half</type></note>" +
+                "<note><pitch><step>d</step><octave>4</octave></pitch><duration>2</duration><type>half</type></note>");
+            const stepError: string = 'Measure 1 of part "Flute" (P1): invalid step "toString", a step is one of A to G. The note is left out.';
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            const logged: string[] = TestUtils.catchLogs();
+            expect(await loadOutcome(osmd, badStepXml)).to.equal("resolved");
+            osmd.render();
+            expect(logged).to.deep.equal(["MusicSheetReadingException: " + stepError]);
+            expect(osmd.Sheet.SheetErrors.measureErrors[1], "the measure's errors").to.deep.equal(["Ignored erroneous Note.", stepError]);
+            // the other note stays where it is, on the measure's second half (its step is read in lower case too)
+            const noteTimes: string[] = osmd.Sheet.SourceMeasures[0].VerticalSourceStaffEntryContainers.map(
+                (container: VerticalSourceStaffEntryContainer): string => {
+                    const notes: Note[] = container.StaffEntries[0].VoiceEntries[0].Notes;
+                    return `${container.Timestamp.RealValue}: ${notes.map((note: Note): string => NoteEnum[note.Pitch.FundamentalNote]).join()}`;
+                });
+            expect(noteTimes).to.deep.equal(["0.5: D"]);
+        });
+
+        it("a note without divisions whose duration isn't a number is skipped with a warning, instead of load() never returning", async () => {
+            const noDivisionsXml: string = validXml.replace("<attributes><divisions>1</divisions></attributes>", "")
+                .replace("<duration>4</duration>", "<duration>x</duration>");
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            const logged: string[] = TestUtils.catchLogs();
+            expect(await loadOutcome(osmd, noDivisionsXml)).to.equal("resolved");
+            expect(logged).to.deep.equal(['[OSMD] Measure 1 of part "Flute" (P1): skipped the <note> element (element 1 of the measure), ' +
+                "which could not be read: Invalid divisions value at Instrument: Flute"]);
+        });
+
+        it("a part that isn't in the part-list is skipped with a warning, a score-part without a part or with another's id is rejected by name", async () => {
+            const otherPart: string = `<part id="P2"><measure number="1"><attributes><divisions>1</divisions></attributes>
+                <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note></measure></part>`;
+            const skipped: string = 'Skipped the part "P2": the part-list has no score-part for it.';
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            const logged: string[] = TestUtils.catchLogs();
+            expect(await loadOutcome(osmd, validXml.replace("</score-partwise>", otherPart + "</score-partwise>"))).to.equal("resolved");
+            osmd.render();
+            expect(osmd.Sheet.Instruments.map((instrument: Instrument): string => instrument.Name), "parts").to.deep.equal(["Flute"]);
+            expect(osmd.Sheet.SheetErrors.Errors, "the sheet's errors").to.deep.equal([skipped]);
+            expect(logged).to.deep.equal(["[OSMD] MusicSheetReader: " + skipped]);
+
+            // the only part has another id than its score-part (e.g. a typo): nothing to show
+            let error: Error & { cause?: Error };
+            await osmd.load(validXml.replace('<part id="P1">', '<part id="P9">')).catch((e: Error): void => { error = e; });
+            const reason: string = 'No part for the score-part "P1" of the part-list, and no score-part in the part-list for the part "P9"';
+            expect(error?.message).to.equal("OpenSheetMusicDisplay: The given music sheet was incomplete or could not be loaded: " + reason);
+            // the reader's exceptions are Errors
+            expect(error.cause instanceof Error && error.cause.stack !== undefined, "the cause is an Error with a stack").to.equal(true);
+            expect(String(error.cause)).to.equal("MusicSheetReadingException: " + reason);
+
+            // two score-parts with the same id: the part could belong to either
+            const sameIdXml: string = validXml.replace("</part-list>", '<score-part id="P1"><part-name>Oboe</part-name></score-part></part-list>');
+            expect(await loadOutcome(osmd, sameIdXml)).to.equal("rejected: OpenSheetMusicDisplay: The given music sheet was incomplete " +
+                'or could not be loaded: The part-list has more than one score-part with the id "P1"');
+        });
+
+        it("an error of the reader is passed on in the rejection, as message and cause", async () => {
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            const logged: string[] = TestUtils.catchLogs();
+            let error: Error & { cause?: Error };
+            await osmd.load(validXml.replace(/<part-list>.*<\/part-list>/, "")).catch((e: Error): void => { error = e; });
+            expect(error?.message).to.equal("OpenSheetMusicDisplay: The given music sheet was incomplete or could not be loaded: Undefined partListNode");
+            expect(error.cause?.message, "cause").to.equal("Undefined partListNode");
+            expect(logged.length, "the reader still logs its error").to.equal(1);
+        });
+
+        it("a zip file that isn't MXL is rejected with what is missing", async () => {
+            const zip: JSZip = new JSZip();
+            zip.file("notes.txt", "not a score");
+            const expected: string = "rejected: OpenSheetMusicDisplay: Invalid MXL file: META-INF/container.xml is missing, " +
+                "and the archive has no other .musicxml or .xml file";
+            const contents: [string, string | Blob][] = [
+                ["Blob", await zip.generateAsync({type: "blob"})],
+                ["binary string", await zip.generateAsync({type: "binarystring"})],
+            ];
+            for (const [name, content] of contents) {
+                const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+                expect(await loadOutcome(osmd, content), name).to.equal(expected);
+            }
+        });
+
+        it("the text of a file is never requested as a URL: a Blob, an MXL file or a URL's response that isn't XML is rejected", async () => {
+            // e.g. a wrong or crafted file that a user picks in a file input: its text was requested like a URL given by the app
+            const path: string = "/account/delete?confirm=1";
+            const zip: JSZip = new JSZip();
+            zip.file("META-INF/container.xml", "<container><rootfiles><rootfile full-path='score.xml'/></rootfiles></container>");
+            zip.file("score.xml", path);
+            const pathUrl: string = URL.createObjectURL(new Blob([path]));
+            const emptyUrl: string = URL.createObjectURL(new Blob([" \n"]));
+            const notMusicXml: string = 'rejected: OpenSheetMusicDisplay: The file is not MusicXML: it starts with "/account/delete?conf" instead of "<"';
+            const contents: [string, string | Blob, string, string[]][] = [
+                ["Blob", new Blob([path]), notMusicXml, []],
+                ["Blob with byte order mark", new Blob(["﻿" + path]), notMusicXml, []],
+                ["MXL Blob", await zip.generateAsync({type: "blob"}), notMusicXml, []],
+                ["MXL string", await zip.generateAsync({type: "binarystring"}), notMusicXml, []],
+                ["URL", pathUrl, notMusicXml, [pathUrl]],
+                ["URL of an empty file", emptyUrl, "rejected: OpenSheetMusicDisplay: The file is not MusicXML: it is empty", [emptyUrl]],
+            ];
+            const logged: string[] = TestUtils.catchLogs();
+            const requestedUrls: string[] = [];
+            const open: typeof XMLHttpRequest.prototype.open = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]): void {
+                requestedUrls.push(String(url));
+                return open.call(this, method, url, ...rest);
+            };
+            try {
+                for (const [name, content, expected, expectedRequests] of contents) {
+                    requestedUrls.length = 0;
+                    const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+                    expect(await loadOutcome(osmd, content), name).to.equal(expected);
+                    expect(requestedUrls, name + ": requested URLs").to.deep.equal(expectedRequests);
+                }
+            } finally {
+                XMLHttpRequest.prototype.open = open;
+            }
+            expect(logged).to.deep.equal([]);
+        });
+
+        it("a long string that is neither XML nor a URL is rejected with its own message", async () => {
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(TestUtils.getDivElement(document));
+            const logged: string[] = TestUtils.catchLogs();
+            expect(await loadOutcome(osmd, "score-partwise ".repeat(200))).to.equal("rejected: OpenSheetMusicDisplay: " +
+                "The string is neither XML nor a URL: it doesn't start with \"<\", and is too long for a URL (3000 characters)");
+            expect(logged).to.deep.equal([]);
+        });
+    });
+
+    it("render without loading", () => {
         const div: HTMLElement = TestUtils.getDivElement(document);
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
         expect(() => {
             return opensheetmusicdisplay.render();
         }).to.throw(/load/);
-        done();
     });
 
-    before((): void => {
+    it("keeps the zoom when another score is loaded, and over clear()", async () => {
+        const div: HTMLElement = TestUtils.getDivElement(document);
+        try {
+            div.style.width = "600px";
+            const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
+            osmd.Zoom = 0.6; // also before the first load()
+            await osmd.load(TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml"));
+            expect(osmd.Zoom, "Zoom after the first load()").to.equal(0.6);
+            osmd.render();
+            await osmd.load(TestUtils.getScore("test_fingering_left_bach_short.musicxml"));
+            expect(osmd.Zoom, "Zoom after another load()").to.equal(0.6);
+            osmd.clear();
+            expect(osmd.Zoom, "Zoom after clear()").to.equal(0.6);
+            await osmd.load(TestUtils.getScore("test_fingering_left_bach_short.musicxml"));
+            osmd.render();
+            // the layout is made for the zoom: 600 px at zoom 0.6 are 100 units
+            expect(osmd.Sheet.pageWidth, "the page width of the layout in units").to.be.closeTo(100, 0.01);
+        } finally {
+            div.remove();
+        }
+    });
+
+    beforeAll((): void => {
         // Create the container for the "test width" test
         container1 = TestUtils.getDivElement(document);
     });
-    after((): void => {
+    afterAll((): void => {
         // Destroy the container for the "test width" test
         document.body.removeChild(container1);
     });
 
-    it("test width 500", (done: Mocha.Done) => {
+    it("test width 500", async () => {
         const div: HTMLElement = container1;
         div.style.width = "500px";
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
         const score: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
-        opensheetmusicdisplay.load(score).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                expect(div.offsetWidth).to.equal(500);
-                done();
-            },
-            done
-        ).catch(done);
+        await opensheetmusicdisplay.load(score);
+        opensheetmusicdisplay.render();
+        expect(div.offsetWidth).to.equal(500);
     });
 
-    it("test width 200", (done: Mocha.Done) => {
+    it("test width 200", async () => {
         const div: HTMLElement = container1;
         div.style.width = "200px";
         const opensheetmusicdisplay: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(div);
         const score: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
-        opensheetmusicdisplay.load(score).then(
-            (_: {}) => {
-                opensheetmusicdisplay.render();
-                expect(div.offsetWidth).to.equal(200);
-                done();
-            },
-            done
-        ).catch(done);
+        const logged: string[] = TestUtils.catchLogs();
+        await opensheetmusicdisplay.load(score);
+        opensheetmusicdisplay.render();
+        expect(div.offsetWidth).to.equal(200);
+        // the part names "Piano (right)" and "Piano (left)" give way to the first measure (EngravingRules.FitPartLabelsToMeasures):
+        //   before, they left its two staves no width ("SkyBottomLineCalculator: width not > 0 in measure 1" for each)
+        expect(logged).to.deep.equal([]);
     });
 
     /**
@@ -545,15 +692,13 @@ describe("OpenSheetMusicDisplay Main Export", () => {
 
     describe("cursor with hidden instrument", () => {
         let osmd: OpenSheetMusicDisplay;
-        beforeEach(() => {
+        beforeEach(async () => {
             const div: HTMLElement = TestUtils.getDivElement(document);
             osmd = TestUtils.createOpenSheetMusicDisplay(div);
             const score: Document =
                 TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
-            return osmd.load(score)
-                .then(() => {
-                    osmd.render();
-                });
+            await osmd.load(score);
+            osmd.render();
         });
 
         it("should move cursor after instrument is hidden", () => {
@@ -569,18 +714,18 @@ describe("OpenSheetMusicDisplay Main Export", () => {
     });
     describe("cursor", () => {
         let opensheetmusicdisplay: OpenSheetMusicDisplay;
-        beforeEach((done: Mocha.Done) => {
-            const div: HTMLElement = container1;
+        let div: HTMLElement;
+        beforeEach(async () => {
+            // a container of its own: "test width 200" leaves container1 too narrow for a measure
+            div = TestUtils.getDivElement(document);
             opensheetmusicdisplay = TestUtils.createOpenSheetMusicDisplay(div);
             const score: Document = TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml");
-            opensheetmusicdisplay.load(score).then(
-                (_: {}) => {
-                    opensheetmusicdisplay.render();
-                    opensheetmusicdisplay.cursors[0].show();
-                    done();
-                },
-                done
-            ).catch(done);
+            await opensheetmusicdisplay.load(score);
+            opensheetmusicdisplay.render();
+            opensheetmusicdisplay.cursors[0].show();
+        });
+        afterEach((): void => {
+            div.remove();
         });
 
         describe("next() and previous()", () => {
@@ -705,17 +850,12 @@ describe("OpenSheetMusicDisplay Main Export", () => {
     describe("cursor with notehead none (invisible notes)", () => {
         let osmd: OpenSheetMusicDisplay;
 
-        beforeEach((done: Mocha.Done) => {
+        beforeEach(async () => {
             const div: HTMLElement = TestUtils.getDivElement(document);
             osmd = TestUtils.createOpenSheetMusicDisplay(div);
             const score: Document = TestUtils.getScore("test_cursor_skip_notehead_none.musicxml");
-            osmd.load(score).then(
-                (_: {}) => {
-                    osmd.render();
-                    done();
-                },
-                done
-            ).catch(done);
+            await osmd.load(score);
+            osmd.render();
         });
 
         it("should skip entries where all notes have notehead none when SkipInvisibleNotes is true", () => {

@@ -1,9 +1,12 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 /* eslint-disable @typescript-eslint/no-unused-expressions */
 import { Pitch } from "../../../../src/Common/DataObjects/Pitch";
 import { BoundingBox } from "../../../../src/MusicalScore/Graphical/BoundingBox";
 import { GraphicalStaffEntry } from "../../../../src/MusicalScore/Graphical/GraphicalStaffEntry";
 import { MusicSystem } from "../../../../src/MusicalScore/Graphical/MusicSystem";
+import { StaffLine } from "../../../../src/MusicalScore/Graphical/StaffLine";
+import { VexFlowGraphicalNote } from "../../../../src/MusicalScore/Graphical/VexFlow/VexFlowGraphicalNote";
+import { unitInPixels } from "../../../../src/MusicalScore/Graphical/VexFlow/VexFlowMusicSheetDrawer";
 import { VexFlowVibratoBracket } from "../../../../src/MusicalScore/Graphical/VexFlow/VexFlowVibratoBracket";
 import { VexFlowVoiceEntry } from "../../../../src/MusicalScore/Graphical/VexFlow/VexFlowVoiceEntry";
 import { WavyLine } from "../../../../src/MusicalScore/VoiceData/Expressions/ContinuousExpressions/WavyLine";
@@ -26,30 +29,27 @@ describe("VexFlowVibratoBracket", () => {
         return new VexFlowVibratoBracket(new WavyLine(undefined), new BoundingBox(undefined));
     }
 
-    it("setStartNote returns false for an undefined staff entry instead of throwing", (done: Mocha.Done) => {
+    it("setStartNote returns false for an undefined staff entry instead of throwing", () => {
         const bracket: VexFlowVibratoBracket = createBracket();
         let result: boolean;
         expect(() => result = bracket.setStartNote(undefined)).to.not.throw();
         expect(result, "no start note could be found").to.be.false;
         expect(bracket.startNote, "start note stays unset").to.be.undefined;
-        done();
     });
 
-    it("setEndNote returns false for an undefined staff entry instead of throwing", (done: Mocha.Done) => {
+    it("setEndNote returns false for an undefined staff entry instead of throwing", () => {
         const bracket: VexFlowVibratoBracket = createBracket();
         let result: boolean;
         expect(() => result = bracket.setEndNote(undefined)).to.not.throw();
         expect(result, "no end note could be found").to.be.false;
         expect(bracket.endNote, "end note stays unset").to.be.undefined;
-        done();
     });
 
-    it("still reports false for a staff entry without voice entries", (done: Mocha.Done) => {
+    it("still reports false for a staff entry without voice entries", () => {
         const bracket: VexFlowVibratoBracket = createBracket();
         const emptyStaffEntry: GraphicalStaffEntry = { graphicalVoiceEntries: [] } as GraphicalStaffEntry;
         expect(bracket.setStartNote(emptyStaffEntry), "no start note in an empty staff entry").to.be.false;
         expect(bracket.setEndNote(emptyStaffEntry), "no end note in an empty staff entry").to.be.false;
-        done();
     });
 });
 
@@ -176,5 +176,126 @@ describe("Wavy line of a trill on a note with grace notes", () => {
             "m.2 B4-B4, in front of grace A4", // over the Nachschlag until the end of the measure before
             "m.3 C5-B4, at the end of the end note", // was "m.3 grace D5-grace C5, ...", from grace note to grace note
         ]);
+    });
+});
+
+/**
+ * An 8va and a trill line from the same note: the trill mark and its wavy line go closer to the notes, the octave sign outside
+ * (Gould, Behind Bars, pp. 29 and 135). The 8va set the text position of the stave it starts in, at which Vexflow also draws
+ * the trill mark: the trill mark was drawn in the 8va label, and the wavy line, placed after the 8va, at its dashes.
+ */
+describe("Trill line under an 8va from the same note", () => {
+    /** 4/4. m.1: C5, then from beat 2 an 8va and a trill line on D6 E6 F6 | m.2: G6 A6 B6 A6, where both end, drawn an octave
+     *  lower: rising to B5 above the first ledger line, above the bottom of the trill mark (not above its top) |
+     *  m.3: C5 half with a trill line, B4 half. */
+    const sampleFilename: string = "test_octaveshift_trill_line.musicxml";
+    let container: HTMLElement;
+    let osmd: OpenSheetMusicDisplay;
+
+    beforeEach(() => {
+        container = TestUtils.getDivElement(document);
+        container.style.width = "1000px"; // one system
+        osmd = TestUtils.createOpenSheetMusicDisplay(container);
+    });
+    afterEach(() => {
+        container.remove();
+    });
+
+    interface Box { left: number, right: number, top: number, bottom: number }
+
+    it("draws the trill mark and its wavy line over the notes, under the 8va label", async () => {
+        await osmd.load(TestUtils.getScore(sampleFilename));
+        osmd.render();
+        const staffLine: StaffLine = osmd.GraphicSheet.MusicPages[0].MusicSystems[0].StaffLines[0];
+        /** the drawn box of an element, in units, its y relative to the staff line like its sky line (negative is up) */
+        const box: (element: Element) => Box = element => {
+            const bounds: DOMRect = (element as SVGGraphicsElement).getBBox();
+            const staffY: number = staffLine.PositionAndShape.AbsolutePosition.y;
+            return { left: bounds.x / unitInPixels, right: (bounds.x + bounds.width) / unitInPixels,
+                top: bounds.y / unitInPixels - staffY, bottom: (bounds.y + bounds.height) / unitInPixels - staffY };
+        };
+        const isLevel: (a: Box, b: Box) => boolean = (a, b) => a.top < b.bottom && a.bottom > b.top;
+        const trillMark: (line: VexFlowVibratoBracket) => Box = line =>
+            box((line.startVfVoiceEntry.notes[0] as VexFlowGraphicalNote).getSVGGElement().querySelector(".vf-ornament"));
+        const [trillLine, laterTrillLine] = staffLine.WavyLines as VexFlowVibratoBracket[];
+        const [wave, laterWave] = Array.from(container.querySelectorAll("path.vf-vibratobracket, g.vf-vibratobracket > path")).map(box);
+        const mark: Box = trillMark(trillLine);
+        // (the baseline of the 8 of the label: its text's y)
+        const label: Element = container.querySelector("g.vf-textbracket text");
+        const labelBaseline: number = Number(label.getAttribute("y")) / unitInPixels - staffLine.PositionAndShape.AbsolutePosition.y;
+        expect(mark.top, "the trill mark is under the 8va label").to.be.at.least(labelBaseline);
+        expect(wave.top, "the wavy line is under the 8va label").to.be.at.least(labelBaseline);
+        // (the trill line raises its trill mark by itself, not by the text position of their stave, which the label would be
+        //   drawn from: drawn from a raised text position, the label was 1 unit higher)
+        expect(wave.top - labelBaseline, "the 8va label is right above the wavy line").to.be.below(1.5);
+        expect(isLevel(wave, mark), "the wavy line is level with its trill mark").to.equal(true);
+        const heads: Box[] = staffLine.Measures.flatMap(measure => measure.staffEntries)
+            .flatMap(staffEntry => staffEntry.graphicalVoiceEntries).flatMap(voiceEntry => voiceEntry.notes)
+            .flatMap(note => (note as VexFlowGraphicalNote).getNoteheadSVGs()).map(box)
+            .filter(head => head.right > wave.left && head.left < wave.right);
+        expect(heads.length, "notes under the wavy line").to.equal(6);
+        for (const head of heads) {
+            // (the line was drawn level with the trill mark, through the heads of A5 and B5)
+            expect(wave.bottom, "the wavy line is above the note heads under it").to.be.at.most(head.top);
+        }
+        // a trill line with nothing in its way stays at its trill mark, where Vexflow draws that: one space above the staff
+        //   (the sky line has the trill mark also a bit beyond where its wavy line starts: it isn't in the line's way)
+        const laterMark: Box = trillMark(laterTrillLine);
+        expect(laterMark.bottom, "the trill mark of the trill line in m.3 stays at its place").to.be.closeTo(-1, 0.25);
+        expect(isLevel(laterWave, laterMark), "the wavy line in m.3 is level with its trill mark").to.equal(true);
+    });
+});
+
+/**
+ * A trill line raised over high notes, ending on a note with a fermata (like Haydn's Concertante, cello, measures 261-263).
+ * The trill line raised its trill mark by raising the text position of the staves it starts and ends in, after the sky line was
+ * calculated: that also raised the other marks placed from it there, e.g. the fermata, which the sky line then didn't have.
+ */
+describe("Trill line raised over high notes, ending on a note with a fermata", () => {
+    /** 4/4, violin. m.1: C5 with a trill line, E6 F6 G6 | m.2: C5 whole note with a fermata, where the trill line ends. */
+    const sampleFilename: string = "test_wavy_line_raised_end_note_fermata.musicxml";
+    let container: HTMLElement;
+    let osmd: OpenSheetMusicDisplay;
+
+    beforeEach(() => {
+        container = TestUtils.getDivElement(document);
+        container.style.width = "1000px"; // one system
+        osmd = TestUtils.createOpenSheetMusicDisplay(container);
+    });
+    afterEach(() => {
+        container.remove();
+    });
+
+    interface Box { left: number, right: number, top: number, bottom: number }
+
+    it("leaves the fermata above its note, where the sky line has it, under the wavy line", async () => {
+        await osmd.load(TestUtils.getScore(sampleFilename));
+        osmd.render();
+        const staffLine: StaffLine = osmd.GraphicSheet.MusicPages[0].MusicSystems[0].StaffLines[0];
+        /** the drawn box of an element, in units relative to the staff line, like its sky line (negative is up) */
+        const box: (element: Element) => Box = element => {
+            const bounds: DOMRect = (element as SVGGraphicsElement).getBBox();
+            const position: { x: number, y: number } = staffLine.PositionAndShape.AbsolutePosition;
+            return { left: bounds.x / unitInPixels - position.x, right: (bounds.x + bounds.width) / unitInPixels - position.x,
+                top: bounds.y / unitInPixels - position.y, bottom: (bounds.y + bounds.height) / unitInPixels - position.y };
+        };
+        const [trillLine] = staffLine.WavyLines as VexFlowVibratoBracket[];
+        const wave: Box = box(container.querySelector("path.vf-vibratobracket, g.vf-vibratobracket > path"));
+        const trillMark: Box = box((trillLine.startVfVoiceEntry.notes[0] as VexFlowGraphicalNote).getSVGGElement()
+            .querySelector(".vf-ornament"));
+        const endNote: VexFlowGraphicalNote = trillLine.endVfVoiceEntry.notes[0] as VexFlowGraphicalNote;
+        const fermata: Box = box(endNote.getModifierSVGs()[0]); // the fermata is the note's only modifier
+        const head: Box = box(endNote.getNoteheadSVGs()[0]);
+        // the trill line is raised over the high notes, with its trill mark
+        expect(wave.bottom, "the wavy line is above the staff, raised").to.be.below(-3);
+        expect(trillMark.top < wave.bottom && trillMark.bottom > wave.top, "the trill mark is level with its wavy line").to.equal(true);
+        // the fermata stays above its note: one and a half spaces above the staff (was 4.5 spaces higher, in the wavy line)
+        expect(fermata.bottom, "the fermata is above the note head").to.be.at.most(head.top);
+        expect(fermata.bottom, "the fermata is close above the staff").to.be.above(-1.5);
+        expect(fermata.top, "the fermata is under the wavy line").to.be.at.least(wave.bottom);
+        const skyLine: number[] = staffLine.SkyLine;
+        const samplingUnit: number = staffLine.SkyBottomLineCalculator.SamplingUnit;
+        const highestSky: number = Math.min(...skyLine.slice(Math.floor(fermata.left * samplingUnit), Math.ceil(fermata.right * samplingUnit)));
+        expect(highestSky, "the sky line over the fermata is above it").to.be.at.most(fermata.top + 0.05);
     });
 });

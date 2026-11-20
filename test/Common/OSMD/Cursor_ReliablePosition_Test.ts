@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { Fraction } from "../../../src/Common/DataObjects/Fraction";
@@ -82,12 +82,12 @@ describe("Cursor reliable position", () => {
                 prevX = x;
                 prevSystemIndex = systemIndex;
             }
-        }).timeout(10000);
+        });
     }
 
     it("tablature sample: stepping the cursor never places it off-canvas", async () => {
         const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(container);
-        // this sample has tablature rests that are never formatted and carry garbage coordinates
+        // a rest-only TAB measure on top of this sample used to give the notes below it garbage coordinates
         // (x ~ 70000 units); the cursor used to jump ~700000px off-canvas when stepping onto them
         await loadAndRender(osmd, "test_tab_dont_switch_to_classical_from_clefinstruction.musicxml");
         osmd.cursor.reset();
@@ -104,5 +104,5 @@ describe("Cursor reliable position", () => {
             steps++;
         }
         expect(steps, "the cursor stepped through the whole sample").to.be.greaterThan(4).and.to.be.lessThan(maxSteps);
-    }).timeout(10000);
+    });
 });

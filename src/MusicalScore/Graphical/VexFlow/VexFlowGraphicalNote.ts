@@ -215,7 +215,8 @@ export class VexFlowGraphicalNote extends GraphicalNote {
     }
 
     /** Whether the note is visible: false after setVisible(false), which hides its notehead (unless
-     * VisibilityOptions.applyToNotehead is false), and for a note hidden in the score, e.g. by print-object="no" (see Note.isVisible()).
+     * VisibilityOptions.applyToNotehead is false), and for a note hidden in the score, e.g. by print-object="no", or of a hidden
+     * voice (Voice.Visible false), see Note.isVisible().
      * Like setVisible(), this works on the drawn SVG: a new render draws the notes hidden with setVisible() visible again.
      * It's true for a note that isn't drawn at all, e.g. of a hidden instrument (Instrument.Visible false).
      */
@@ -518,7 +519,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
 
     /** Gets the SVG element of the note's flag: its path, or with EngravingRules.SVGMergeSingleChildGroups false, its group. */
     public getFlagSVG(): HTMLElement {
-        const vfNote: HTMLElement = this.getVFNoteSVG();
+        const vfNote: HTMLElement = this.isTabNote ? this.getSVGGElement() as unknown as HTMLElement : this.getVFNoteSVG();
         if (vfNote?.children?.length) {
             for (const noteChild of Array.from(vfNote.children)) {
                 if (noteChild.classList.contains("vf-flag")) {
@@ -557,8 +558,8 @@ export class VexFlowGraphicalNote extends GraphicalNote {
             return modifierSVGs;
         }
         for (const noteChild of Array.from(stavenote.children)) {
-            if (noteChild.classList.contains("vf-modifiers")) {
-                modifierSVGs.push(noteChild as HTMLElement);
+                if (noteChild.classList.contains("vf-modifiers")) {
+                    modifierSVGs.push(noteChild as HTMLElement);
             }
         }
         return modifierSVGs;
@@ -583,7 +584,9 @@ export class VexFlowGraphicalNote extends GraphicalNote {
                 frets.push(children[2 * i + 1]);
             }
         }
-        const modifiers: HTMLElement[] = children.slice(2 * positionCount).filter((child: HTMLElement) => child.tagName !== "g");
+        const modifiers: HTMLElement[] = children.slice(2 * positionCount).filter((child: HTMLElement) =>
+            !child.classList.contains("vf-stem") && !child.classList.contains("vf-flag") &&
+            (child.tagName !== "g" || child.classList.contains("vf-tab-rhythm-dot")));
         return { frets, modifiers };
     }
 
@@ -738,7 +741,7 @@ export class VexFlowGraphicalNote extends GraphicalNote {
         this.opacity = opacity;
         if (this.deferWhileSystemDetached()) {
             return;
-        }
+}
 
         let targetBeamOpacity: number = opacity;
         if (this.sourceNote.NoteBeam) {

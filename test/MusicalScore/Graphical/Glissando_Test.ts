@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { Note } from "../../../src/MusicalScore/VoiceData/Note";
@@ -8,6 +8,8 @@ import { Glissando } from "../../../src/MusicalScore/VoiceData/Glissando";
 import { VexFlowGlissando } from "../../../src/MusicalScore/Graphical/VexFlow/VexFlowGlissando";
 import { VexFlowGraphicalNote } from "../../../src/MusicalScore/Graphical/VexFlow/VexFlowGraphicalNote";
 import { StaffLine } from "../../../src/MusicalScore/Graphical/StaffLine";
+import { GraphicalMeasure } from "../../../src/MusicalScore/Graphical/GraphicalMeasure";
+import { CollectionUtil } from "../../../src/Util/CollectionUtil";
 
 /**
  * test_glissando_without_slur_or_slide.musicxml has a glissando on notes without a <slur> or <slide> of their own,
@@ -97,7 +99,7 @@ describe("Glissandi across systems with courtesy signatures", () => {
             for (const page of osmd.GraphicSheet.MusicPages) {
                 for (const system of page.MusicSystems) {
                     for (const staffLine of system.StaffLines) {
-                        if (!staffLine.Measures.last().IsExtraGraphicalMeasure) {
+                        if (!CollectionUtil.getLastElement(staffLine.Measures).IsExtraGraphicalMeasure) {
                             continue;
                         }
                         for (const glissando of staffLine.GraphicalGlissandi) {
@@ -107,7 +109,7 @@ describe("Glissandi across systems with courtesy signatures", () => {
                                 expect(glissando.Line, "the glissando segment before the system break is drawn")
                                     .to.not.equal(undefined);
                                 expect(glissando.Line.End.x, "the segment ends at the barline, before the courtesy signature")
-                                    .to.be.closeTo(staffLine.Measures.last().PositionAndShape.RelativePosition.x, 0.01);
+                                    .to.be.closeTo(CollectionUtil.getLastElement(staffLine.Measures).PositionAndShape.RelativePosition.x, 0.01);
                             }
                         }
                     }
@@ -150,7 +152,7 @@ describe("Slides in a part with a standard and a tab staff", () => {
         }
         expect(glissandi.length, "three slides in each staff").to.equal(6);
         for (const glissando of glissandi) {
-            expect(glissando.StartNote.ParentStaff, "start and end note in the same staff").to.equal(glissando.EndNote.ParentStaff);
+            expect(glissando.StartNote.ParentStaff === glissando.EndNote.ParentStaff, "start and end note in the same staff").to.equal(true);
         }
     });
 
@@ -174,5 +176,25 @@ describe("Slides in a part with a standard and a tab staff", () => {
         for (const text of slideTexts) {
             expect(text.getAttribute("font-family"), "font of the text sl.").to.equal("Times");
         }
+    });
+
+    // With a new system at measure 2 (a print, see newSystemFromXML above), the slide from the last note of measure 1
+    //   is drawn in two parts, one in each system.
+    it("labels a slide across a system break sl. in the first system only, like a hammer-on or pull-off", async () => {
+        const score: Document = TestUtils.getScore("test_slides_standard_and_tab_staff.musicxml").cloneNode(true) as Document;
+        const measure2: Element = score.querySelector("measure[number='2']");
+        const newSystem: Element = score.createElement("print");
+        newSystem.setAttribute("new-system", "yes");
+        measure2.insertBefore(newSystem, measure2.firstChild);
+        await osmd.load(score);
+        osmd.render();
+        const tabMeasures: GraphicalMeasure[] = osmd.GraphicSheet.MeasureList.map(verticalMeasures => verticalMeasures[1]);
+        expect(tabMeasures[1].ParentMusicSystem === tabMeasures[0].ParentMusicSystem, "premise: measure 2 starts a new system").to.equal(false);
+        const slideStart: VexFlowGraphicalNote = tabMeasures[0].staffEntries[3].graphicalVoiceEntries[0].notes[0] as VexFlowGraphicalNote;
+        const parts: HTMLElement[] = slideStart.getGlissandoSVGs();
+        expect(parts.length, "a part in each system").to.equal(2);
+        expect(parts.map(part => part.textContent), "the label in the first system only").to.deep.equal(["sl.", ""]);
+        const slideTexts: Element[] = Array.from(container.querySelectorAll("text")).filter(text => text.textContent === "sl.");
+        expect(slideTexts.length, "a text sl. at each of the three slides of the tab staff, once").to.equal(3);
     });
 });

@@ -14,6 +14,7 @@ export enum CursorType {
 /** Possible options for the OpenSheetMusicDisplay constructor and osmd.setOptions(). None are mandatory.
  *  Note that after using setOptions(), you have to call osmd.render() again to make changes visible.
  *  Example: osmd.setOptions({defaultColorRest: "#AAAAAA", drawSubtitle: false}); osmd.render();
+ *  An option that is left out (or undefined) keeps its value, and OSMD doesn't change the options object it is given.
  *
  *  Note that some additional, usually more small scale options are available in EngravingRules,
  *  though not all of them are meant to be manipulated.
@@ -56,14 +57,27 @@ export interface IOSMDOptions {
     autoBeam?: boolean;
     /** Options for autoBeaming like whether to beam over rests. See AutoBeamOptions interface. */
     autoBeamOptions?: AutoBeamOptions;
-    /** Automatically resize score with canvas size. Default is true.
-     *  Listens to the window's resize events. Meanwhile, the container keeps the instance in memory: it's freed together with its
+    /** Automatically render the score again when the width of its container changes. Default is true.
+     *  true: observes the container (ResizeObserver), so the score also adapts when the container changes its width without
+     *  a window resize, e.g. next to a sidebar that opens, in a split pane, or when a hidden container (a tab, display: none)
+     *  is shown: a render() while it's hidden is skipped, and done when it gets a width. Only width changes render again,
+     *  200 ms after the last one. In a browser without ResizeObserver, this listens to the window's resize events instead.
+     *  A sheet taller than the window makes the page's scrollbar appear, which narrows the container where scrollbars
+     *  take space: this doesn't render again, the sheet stays as wide as the container was (reserve the scrollbar's
+     *  space with the CSS `scrollbar-gutter: stable` or `overflow-y: scroll` on the scrolling element to avoid that).
+     *  false: the score is only rendered when you call render(), e.g. from your own resize handling.
+     *  An automatic render replaces the drawn elements: see onRender to do something after each one.
+     *  Meanwhile, the container keeps the instance in memory: it's freed together with its
      *  container, or call osmd.dispose() when you don't need it anymore but keep the container.
-     *  Setting this to false (also during runtime) removes the listener as well.
+     *  Setting this to false (also during runtime) removes the observer or listener as well.
      */
     autoResize?: boolean;
-    /** Render Backend, will be SVG if given undefined, "SVG" or "svg", otherwise Canvas. */
+    /** Render backend: "canvas" (in any letter case) for Canvas, anything else for SVG, e.g. "svg" or a misspelled value.
+     *  Default SVG. */
     backend?: string;
+    /** Whether the instance keeps a small rendering alive, so that a sheet rendered after clear() renders about as fast as
+     *  the one before it: true, false, or "auto" (default): in Chromium-based browsers. Sets osmd.KeepWarm, see there. */
+    keepWarm?: boolean | "auto";
     /** Defines the mode that is used for coloring: XML (0), Boomwhacker(1), CustomColorSet (2). Default XML.
      *  If coloringMode.CustomColorSet (2) is chosen, a coloringSetCustom parameter must be added.
      */
@@ -102,9 +116,15 @@ export interface IOSMDOptions {
     defaultFontFamily?: string;
     /** Default font style, e.g. FontStyles.Bold (1). Default Regular (0). */
     defaultFontStyle?: FontStyles;
-    /** Don't show/load cursor. Will override disableCursor in drawingParameters. */
+    /** Don't show/load cursor. Will override disableCursor in drawingParameters.
+     *  false draws the cursors again from the next render(), also after true or a drawingParameters mode without cursors. */
     disableCursor?: boolean;
-    /** Follow Cursor: Scroll the page when cursor.next() is called and the cursor moves into a new system outside of the current view frame. */
+    /** Follow Cursor: Scroll the cursor into view each time it is updated, e.g. by cursor.next(), previous(), reset() or show():
+     *  to the vertical center of the view (smoothly, or at once over a long distance), or to the horizontal center
+     *  with renderSingleHorizontalStaffline. Default off. This also scrolls while the cursor is still in view,
+     *  and only for cursors that have `follow: true` in their cursorsOptions (the standard cursor has).
+     *  Can also be set by osmd.FollowCursor.
+     */
     followCursor?: boolean;
     /**
      * If true, use a JavaScript-based smooth scroll polyfill instead of the native scrollIntoView.
@@ -135,7 +155,7 @@ export interface IOSMDOptions {
     drawComposer?: boolean;
     /** Whether to draw the lyricist's name, if given (top left of the score). */
     drawLyricist?: boolean;
-    /** Whether to draw metronome marks. Default true. (currently OSMD can only draw one at the beginning) */
+    /** Whether to draw metronome marks (e.g. quarter = 120), at each place the score has one. Default true. */
     drawMetronomeMarks?: boolean;
     /** Whether to replace metronome marks with a "Swing" text label. Default false. */
     drawSwingOnly?: boolean;
@@ -172,7 +192,10 @@ export interface IOSMDOptions {
     measureNumberInterval?: number;
     /** Whether to read measure numbers from the "number" attribute in the xml file as opposed to defaulting to start at measure 1. Default true. */
     useXMLMeasureNumbers?: boolean;
-    /** Whether to draw fingerings (only left to the note for now). Default true (unless solo part). */
+    /** Whether to draw fingerings. Default true. For their position, see fingeringPosition.
+     *  Can be turned off and on again after load(), with a render(). Only with fingeringPosition left or right, where
+     *  the fingerings are created with the notes, call osmd.updateGraphic() before that render().
+     */
     drawFingerings?: boolean;
     /** Where to draw fingerings (above, below, aboveorbelow, left, right, or auto).
      * Default AboveOrBelow. Auto experimental
@@ -192,16 +215,26 @@ export interface IOSMDOptions {
     drawLyrics?: boolean;
     /** Whether to calculate extra slurs with bezier curves not covered by Vexflow slurs. Default true. */
     drawSlurs?: boolean;
-    /** Only draw measure n to m, where m is the number specified. (for n, see drawFromMeasureNumber) */
+    /** Only draw measure n to m, where m is the number specified. (for n, see drawFromMeasureNumber)
+     *  Number.MAX_VALUE (the default) draws up to the last measure again.
+     */
     drawUpToMeasureNumber?: number;
-    /** Only draw the first n systems, where n is the number specified. */
+    /** Only draw the first n systems, where n is the number specified. 0 (or Number.MAX_VALUE, the default) draws all systems again. */
     drawUpToSystemNumber?: number;
-    /** Only draw the first n pages, where n is the number specified. */
+    /** Only draw the first n pages, where n is the number specified. 0 (or Number.MAX_VALUE, the default) draws all pages again. */
     drawUpToPageNumber?: number;
-    /** Only draw measure n to m, where n is the number you specify. (for m, see drawUpToMeasureNumber) */
+    /** Only draw measure n to m, where n is the number you specify. (for m, see drawUpToMeasureNumber)
+     *  0 (the default) draws from the first measure again.
+     */
     drawFromMeasureNumber?: number;
     /** Whether to fill measures that don't have notes given in the XML with whole rests (visible = 1, invisible = 2, for layouting). Default No (0). */
     fillEmptyMeasuresWithWholeRest?: FillEmptyMeasuresWithWholeRests | number;
+    /** Whether to draw a measure of a staff that consists only of rests of one voice, filling the measure, as one whole-measure rest,
+     * e.g. four quarter rests in 4/4 or six quarter rests in 6/4 (like a measure with a single whole-measure rest).
+     * Only affects drawing: the rests keep their time, and chord symbols stay at their times in the measure.
+     * Doesn't apply to pickup measures, multiple voices, hidden or positioned rests, tuplets, beams, grace notes, rests carrying marks
+     * (e.g. fermatas), or an in-measure clef or key change. Default false. Set before load(), or call updateGraphic() after changing it. */
+    drawRestOnlyMeasuresAsWholeMeasureRest?: boolean;
     /** Whether to set the wanted stem direction by xml (default) or automatically. */
     setWantedStemDirectionByXml?: boolean;
     /** Whether tuplets are labeled with ratio (e.g. 5:2 instead of 5 for quintuplets). Default false. */
@@ -225,13 +258,15 @@ export interface IOSMDOptions {
      *  Example: "#FFFFFF" = white. "#12345600" = transparent.
      *  This can be useful when you want to export an image with e.g. white background color
      * instead of transparent, from a CanvasBackend.
-     *  Note: Using a background color will prevent the cursor from being visible for now
-     * (will be fixed at some point).
+     *  With the SVG backend, this is the CSS background-color of each page's <svg> element:
+     * no background rectangle is drawn into the SVG.
+     *  The cursor stays visible: cursor.show() puts it in front of the page instead of behind it.
      */
     pageBackgroundColor?: string;
     /** This makes OSMD render on one single horizontal (staff-)line.
      * This option should be set before loading a score. It only starts working after load(),
      * calling setOptions() after load and then render() doesn't work in this case.
+     * Explicit system breaks still begin a new system below, e.g. with newSystemFromXML (see EngravingRules.RenderSingleHorizontalStaffline).
      */
     renderSingleHorizontalStaffline?: boolean;
     /** Whether to begin a new system ("line break") when given in XML ('new-system="yes"').
@@ -252,6 +287,14 @@ export interface IOSMDOptions {
     newPageFromXML?: boolean;
     /** A custom function that is executed when the xml is read, modifies it, and returns a new xml string that OSMD then parses. */
     onXMLRead?(xml: string): string;
+    /** A function that is called after each render: at the end of render() and of each batch of renderNext(). Code after
+     *  your own render() call does the same; this also covers the renders OSMD starts itself: with autoResize, when the
+     *  container's width changed, and the batches of enableIncrementalRenderingOnScroll(). A render replaces the SVG
+     *  elements, so this is the place to color them or add listeners to them again. Also osmd.OnRender.
+     *  @example
+     *  new OpenSheetMusicDisplay(container, { onRender: () => highlightSelectedNotes() });
+     */
+    onRender?(info: IRenderInfo): void;
     /** The cutoff number for rendering percussion clef stafflines as a single line. Default is 3.
      *  This is the number of different note positions on the staff (usually one per instrument), e.g. a drumset:
      *     <score-part id="P1">
@@ -298,7 +341,7 @@ export interface IOSMDOptions {
      *  IF this value is -1, it will render all percussion clef voices on the single line.
      */
     percussionForceVoicesOneLineCutoff?: number;
-    /** The softmaxFactor for Vexflow's formatter. Default is 5, default in Vexflow is 100 (voice.js).
+    /** The softmaxFactor for Vexflow's formatter. Default is 15, default in Vexflow is 100 (voice.js).
      *  Lowering this factor makes the spacing between individual notes smaller (especially from one half note to the next).
      *  So, to get more compact scores, try lowering this value (or set osmd.zoom, which simply scales),
      *  or try 100 for a more expansive layout.
@@ -330,11 +373,6 @@ export interface IOSMDOptions {
      * If set to false, the previous pixel-based calculation is used, see skyBottomLineBatchMinMeasures.
      */
     useGeometricSkyBottomLineCalculation?: boolean;
-    /** @deprecated No effect. The pixel-based batch calculation (useGeometricSkyBottomLineCalculation false) always reads the pixels
-     * with getImageData (SkyBottomLineBatchCalculatorBackendType.Plain): its WebGL backend was removed,
-     * as the geometric calculation (the default) is faster.
-     */
-    preferredSkyBottomLineBatchCalculatorBackend?: SkyBottomLineBatchCalculatorBackendType;
     /**
      * Defines the minimum number of measures in the entire sheet music where the skyline and bottom-line batch calculation is enabled,
      * if useGeometricSkyBottomLineCalculation is false.
@@ -359,24 +397,15 @@ export enum BackendType {
     Canvas = 1
 }
 
-/**
- * The backends of the pixel-based (raster) skyline calculation in batches, which draws the measures on a canvas and reads its
- * pixels back. OSMD uses it only if EngravingRules.UseGeometricSkyBottomLineCalculation is false (from SkyBottomLineBatchMinMeasures
- * measures on). The geometric calculation, OSMD's default since 2.0.0, uses neither backend and is faster than both.
- */
-export enum SkyBottomLineBatchCalculatorBackendType {
-    /**
-     * Plain, as in without WebGL: scans the canvas pixels, read with getImageData, in JavaScript. The backend of the
-     * pixel-based calculation that OSMD used before the geometric one, which is faster. The only backend since WebGL was removed.
-     */
-    Plain = 0,
-    /** @deprecated No effect: the WebGL backend was removed, as the geometric calculation (the default) is faster;
-     * the pixel-based batch calculation uses Plain.
-     */
-    WebGL = 1,
+/** Handles [[IOSMDOptions]], e.g. returning default options with OSMDOptionsStandard() */
+/** What a render that just ended has drawn, see IOSMDOptions.onRender. */
+export interface IRenderInfo {
+    /** Whether a batch of renderNext() was drawn (incremental rendering), not a render(). */
+    incremental: boolean;
+    /** Whether all measures to render are drawn: always after render(), and after the last batch of renderNext(). */
+    done: boolean;
 }
 
-/** Handles [[IOSMDOptions]], e.g. returning default options with OSMDOptionsStandard() */
 export class OSMDOptions {
     /** Returns the default options for OSMD.
      * These are e.g. used if no options are given in the [[OpenSheetMusicDisplay]] constructor.

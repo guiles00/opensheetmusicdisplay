@@ -18,13 +18,14 @@ import { VexFlowInstrumentBrace } from "./VexFlowInstrumentBrace";
 import { GraphicalLyricEntry } from "../GraphicalLyricEntry";
 import { VexFlowStaffLine } from "./VexFlowStaffLine";
 import { StaffLine } from "../StaffLine";
+import { GraphicalLine } from "../GraphicalLine";
 import { GraphicalSlur } from "../GraphicalSlur";
 import { GraphicalNote } from "../GraphicalNote";
 import { GraphicalMeasure } from "../GraphicalMeasure";
 import { PlacementEnum } from "../../VoiceData/Expressions/AbstractExpression";
 import { GraphicalInstantaneousTempoExpression } from "../GraphicalInstantaneousTempoExpression";
 import { GraphicalInstantaneousDynamicExpression } from "../GraphicalInstantaneousDynamicExpression";
-import log from "loglevel";
+import { log } from "../../../Common/Logging";
 import { GraphicalContinuousDynamicExpression } from "../GraphicalContinuousDynamicExpression";
 import { VexFlowContinuousDynamicExpression } from "./VexFlowContinuousDynamicExpression";
 import { DrawingParameters } from "../DrawingParameters";
@@ -40,6 +41,7 @@ import { VexFlowConverter } from "./VexFlowConverter";
 import { VexFlowVibratoBracket } from "./VexFlowVibratoBracket";
 import { TremoloBetweenNotes } from "../../VoiceData/Note";
 import { SkyBottomLineCalculator } from "../SkyBottomLineCalculator";
+import { CollectionUtil } from "../../../Util/CollectionUtil";
 
 /**
  * This is a global constant which denotes the height in pixels of the space between two lines of the stave
@@ -65,17 +67,8 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
     }
 
     public drawSheet(graphicalMusicSheet: GraphicalMusicSheet): void {
-        // vexflow 3.x: change default font
-        if (this.rules.DefaultVexFlowNoteFont === "gonville") {
-            (Vex.Flow as any).DEFAULT_FONT_STACK = [(Vex.Flow as any).Fonts?.Gonville, (Vex.Flow as any).Fonts?.Bravura, (Vex.Flow as any).Fonts?.Custom];
-        } // else keep new vexflow default Bravura (more cursive, bold).
-
-        // sizing defaults in Vexflow
-        (Vex.Flow as any).STAVE_LINE_THICKNESS = this.rules.StaffLineWidth * unitInPixels;
-        (Vex.Flow as any).STEM_WIDTH = this.rules.StemWidth * unitInPixels;
-        // sets scale/size of notes/rest notes:
-        (Vex.Flow as any).DEFAULT_NOTATION_FONT_SCALE = this.rules.VexFlowDefaultNotationFontScale; // default 39
-        (Vex.Flow as any).DEFAULT_TAB_FONT_SCALE = this.rules.VexFlowDefaultTabFontScale; // default 39 // TODO doesn't seem to do anything
+        // this instance's sizes and font, which VexFlow has once per page: another instance may have rendered since the layout
+        VexFlowConverter.applyRulesToVexFlow(this.rules);
 
         this.pageIdx = 0;
         for (const graphicalMusicPage of graphicalMusicSheet.MusicPages) {
@@ -397,6 +390,23 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
         this.addSVGClass(graphicalSlur.SVGElement, "osmd-slur");
     }
 
+    protected drawCrossStaffBeams(musicSystem: MusicSystem): void {
+        const measures: VexFlowMeasure[] = musicSystem.StaffLines
+            .flatMap((staffLine: StaffLine) => staffLine.Measures as VexFlowMeasure[])
+            .filter((measure: VexFlowMeasure) => this.lazyDrawsObject(measure.PositionAndShape)); // (drawn in this batch, see drawMeasure())
+        try {
+            for (const measure of measures) {
+                measure.drawCrossStaffBeams(this.backend.getContext());
+            }
+            // then the tuplets of their notes, placed from the stems the beams extended
+            for (const measure of measures) {
+                measure.drawCrossStaffTuplets(this.backend.getContext());
+            }
+        } catch (ex) {
+            log.warn("VexFlowMusicSheetDrawer.drawCrossStaffBeams", ex);
+        }
+    }
+
     protected drawMeasure(measure: VexFlowMeasure): void {
         if (!this.lazyDrawsObject(measure.PositionAndShape)) {
             return; // lazy horizontal: this measure is outside the batch's draw x-window
@@ -432,7 +442,8 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
     protected drawBuzzRolls(staffEntry: GraphicalStaffEntry, newBuzzRollId): number {
         for (const gve of staffEntry.graphicalVoiceEntries) {
             for (const note of gve.notes) {
-                if (note.sourceNote.TremoloInfo?.tremoloUnmeasured) {
+                // not for a note that isn't drawn: hidden (print-object="no") or of a hidden voice, see Note.isVisible()
+                if (note.sourceNote.TremoloInfo?.tremoloUnmeasured && note.sourceNote.isVisible()) {
                     const thickness: number = this.rules.TremoloBuzzRollThickness;
                     const baseLength: number = 0.9;
                     const baseHeight: number = 0.5;
@@ -480,7 +491,7 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
                     let currentPoint: PointF2D = new PointF2D(buzzStartX, buzzStartY);
                     pathPoints.push(currentPoint);
                     for (const movement of movements) {
-                        currentPoint = pathPoints.last();
+                        currentPoint = CollectionUtil.getLastElement(pathPoints);
                         pathPoints.push(new PointF2D(currentPoint.x + movement.x, currentPoint.y - movement.y));
                     }
                     const node: Node = this.DrawPath(pathPoints, vfNote.ParentMusicPage, true);
@@ -497,6 +508,8 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
      *  e.g. two alternating half notes with 3 strokes between them, often seen in orchestral string parts.
      *  (Vexflow doesn't support these tremolos, so we draw them ourselves here.)
      *  Also updates the SkyLine/BottomLine where the strokes exceed it.
+     *  Not where a note isn't drawn (see Note.isVisible()): the strokes are left out with it, like those of a single-note
+     *  tremolo, which Vexflow draws in the style of its notehead (transparent then).
      */
     protected drawTremolosBetweenNotes(measure: VexFlowMeasure): void {
         if (measure.isTabMeasure) {
@@ -511,6 +524,9 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
                         continue;
                         // only draw when reaching the stop note (second note): at this point, both notes have been drawn
                         //   and have their final positions, even if the start note is in a previously drawn measure.
+                    }
+                    if (tremolo.startNote?.isVisible() === false || !gNote.sourceNote.isVisible()) {
+                        continue; // a note isn't drawn: hidden (print-object="no") or of a hidden voice, see Note.isVisible()
                     }
                     try {
                         strokeId = this.drawTremoloBetweenTwoNotes(tremolo, gNote as VexFlowGraphicalNote, measure, strokeId);
@@ -934,7 +950,12 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
         for (const graphicalPedal of staffLine.Pedals) {
             if (graphicalPedal) {
                 const vexFlowPedal: VexFlowPedal = graphicalPedal as VexFlowPedal;
-                if (!this.lazyDrawsSpanToMeasure(vexFlowPedal.endMeasure)) {
+                // the pedal's part on this staffline ends in its end measure, or at the end of the staffline if it goes on
+                //   in a later system (the end measure of a part before is the pedal's own, in that system)
+                const endMeasure: GraphicalMeasure = vexFlowPedal.endMeasure;
+                const endMeasureOnStaffLine: GraphicalMeasure = !endMeasure || endMeasure.ParentStaffLine === staffLine
+                    ? endMeasure : CollectionUtil.getLastElement(staffLine.Measures);
+                if (!this.lazyDrawsSpanToMeasure(endMeasureOnStaffLine)) {
                     continue; // lazy horizontal: span not yet fully in the frontier
                 }
                 const ctx: Vex.IRenderContext = this.backend.getContext();
@@ -994,6 +1015,31 @@ export class VexFlowMusicSheetDrawer extends MusicSheetDrawer {
                 label.SVGNode = this.drawLabel(label, <number>GraphicalLayers.Notes);
             } else {
                 log.warn("Unkown type of expression!");
+            }
+        }
+    }
+
+    protected drawDashedLinesAfterTexts(staffLine: StaffLine): void {
+        for (const graphicalDashes of staffLine.ExpressionDashes) {
+            const line: GraphicalLine = graphicalDashes.Line;
+            const staffLinePosition: PointF2D = staffLine.PositionAndShape.AbsolutePosition;
+            // (lazy horizontal: each part is drawn by the batch that reaches its end)
+            if (!this.lazyDrawsAtX(staffLinePosition.x + line.End.x)) {
+                continue;
+            }
+            const start: PointF2D = this.applyScreenTransformation(new PointF2D(staffLinePosition.x + line.Start.x, staffLinePosition.y + line.Start.y));
+            const end: PointF2D = this.applyScreenTransformation(new PointF2D(staffLinePosition.x + line.End.x, staffLinePosition.y + line.End.y));
+            // the color of the text, so that the text and its line stay one marking
+            const textLabel: GraphicalLabel = graphicalDashes.TextLabel;
+            let color: string = "#000000";
+            if (this.rules.ColoringEnabled) { // as for the text, see renderLabel()
+                color = textLabel.ColorXML ?? textLabel.Label.colorDefault ?? this.rules.DefaultColorLabel ?? color;
+            }
+            line.SVGElement = this.backend.renderLine(start, end, color, line.Width * unitInPixels, undefined,
+                [graphicalDashes.DashLength * unitInPixels, graphicalDashes.GapLength * unitInPixels]);
+            this.addSVGClass(line.SVGElement, "osmd-expression-dashes");
+            if (graphicalDashes.ContinuationLabel) {
+                graphicalDashes.ContinuationLabel.SVGNode = this.drawLabel(graphicalDashes.ContinuationLabel, <number>GraphicalLayers.Notes);
             }
         }
     }

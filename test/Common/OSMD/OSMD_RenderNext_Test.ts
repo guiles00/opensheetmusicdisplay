@@ -1,5 +1,6 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { IRenderNextOptions, IRenderNextResult, OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
+import { Cursor } from "../../../src/OpenSheetMusicDisplay/Cursor";
 import { GraphicalMeasure } from "../../../src/MusicalScore/Graphical/GraphicalMeasure";
 import { GraphicalMusicPage } from "../../../src/MusicalScore/Graphical/GraphicalMusicPage";
 import { MusicSystem } from "../../../src/MusicalScore/Graphical/MusicSystem";
@@ -28,13 +29,13 @@ describe("OpenSheetMusicDisplay incremental rendering (renderNext)", () => {
     let container: HTMLElement;
     let osmd: OpenSheetMusicDisplay;
 
-    beforeEach((done: Mocha.Done): void => {
+    beforeEach(async (): Promise<void> => {
         // a fresh container per test: an OSMD instance only removes its own previous rendering from the container
         container = TestUtils.getDivElement(document);
         osmd = TestUtils.createOpenSheetMusicDisplay(container); // autoResize: false
         osmd.setOptions({ drawCredits: true, newSystemFromXML: true }); // the sample's system breaks: 4 systems regardless of width
         osmd.EngravingRules.RenderCopyright = true; // default false
-        osmd.load(TestUtils.getScore(sampleFilename)).then((): void => done(), done);
+        await osmd.load(TestUtils.getScore(sampleFilename));
     });
 
     afterEach((): void => {
@@ -201,6 +202,19 @@ describe("OpenSheetMusicDisplay incremental rendering of a single horizontal sta
         }
     });
 
+    it("draws the part of a pedal line going on in the next system with its last measure in the system, like render()", async () => {
+        // 5 measures in 2 systems (a system break from the XML before the last one), a pedal from measure 4 into measure 5. Its
+        //   part in the first system used to be drawn with the first batch, before measure 4 was drawn: in the wrong place, from
+        //   the start of the system. The batch whose window reached the x of the pedal's end in the next system drew it, instead
+        //   of the batch drawing the part's last measure.
+        osmd.setOptions({ newSystemFromXML: true });
+        await osmd.load(TestUtils.getScore("test_pedal_resume_discontinue.musicxml"));
+        osmd.render();
+        const elementsOfRender: string[] = drawnElements();
+        expect(renderNextUntilDone(1), "batches").to.equal(5);
+        expect(drawnElements()).to.deep.equal(elementsOfRender);
+    });
+
     it("draws the sky and bottom lines and the bounding boxes of the debug drawing once, like render()", async () => {
         osmd.DrawSkyLine = true;
         osmd.DrawBottomLine = true;
@@ -221,6 +235,50 @@ describe("OpenSheetMusicDisplay incremental rendering of a single horizontal sta
         const ids: string[] = Array.from(container.querySelectorAll("g.osmd-staffline")).map((group: Element): string => group.id);
         expect(ids).to.deep.equal(["osmd-staffline0-0", "osmd-staffline0-1", "", "", "osmd-staffline1-0", "osmd-staffline1-1", "", "",
             "osmd-staffline2-0", "osmd-staffline2-1", "", ""]);
+    });
+
+    /**
+     * Counts the pixels of a canvas that aren't fully opaque, i.e. not covered by the page background.
+     * @param canvas the canvas of a page (canvas backend)
+     * @returns the number of pixels with an alpha below 255
+     */
+    function notOpaquePixels(canvas: HTMLCanvasElement): number {
+        const data: Uint8ClampedArray = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        let count: number = 0;
+        for (let i: number = 3; i < data.length; i += 4) {
+            if (data[i] !== 255) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    it("fills the canvas with the page background, also the part each batch adds to the right", async () => {
+        // the canvas backend keeps the drawn batches when the next one makes the canvas wider, and used to leave the added
+        //   part transparent instead of filling it with the page background (e.g. black in dark mode)
+        osmd.setOptions({ backend: "canvas", pageBackgroundColor: "#FFFFFF" });
+        await osmd.load(TestUtils.getScore("test_Braille_Lyrics_Simple.musicxml")); // one staff, 4 measures
+        const canvasWidths: number[] = [];
+        let result: IRenderNextResult;
+        do {
+            result = osmd.renderNext({ measures: 1 });
+            const canvas: HTMLCanvasElement = container.querySelector("canvas");
+            canvasWidths.push(canvas.width);
+            expect(notOpaquePixels(canvas), `pixels without the background after batch ${canvasWidths.length}`).to.equal(0);
+        } while (!result.done && canvasWidths.length < 10);
+        expect(canvasWidths.length, "batches").to.equal(4);
+        expect(canvasWidths[3], "canvas width after the last batch").to.be.greaterThan(canvasWidths[0]);
+    });
+
+    it("fills the canvas of a page with the page background when a later batch reaches the page", async () => {
+        // until then, the canvas of the page is 0 wide, so it has nothing to keep, and it was left transparent as a whole
+        osmd.setOptions({ backend: "canvas", pageBackgroundColor: "#FFFFFF", newPageFromXML: true });
+        await osmd.load(TestUtils.getScore("test_pagebreak_implies_systembreak.musicxml")); // a page break before measure 2
+        expect(osmd.renderNext({ measures: 1 }).done, "done after the first batch").to.equal(false);
+        const canvases: HTMLCanvasElement[] = Array.from(container.querySelectorAll("canvas"));
+        expect(canvases.map((canvas: HTMLCanvasElement): boolean => canvas.width > 0), "pages drawn on").to.deep.equal([true, false]);
+        expect(osmd.renderNext({ measures: 1 }).done, "done after the second batch").to.equal(true);
+        expect(canvases.map(notOpaquePixels), "pixels without the background per page").to.deep.equal([0, 0]);
     });
 });
 
@@ -314,16 +372,21 @@ describe("OpenSheetMusicDisplay incremental rendering of the endless page in bat
     it("draws wedges and octave shifts continued in the next systems", async () => {
         // a crescendo through 4 systems, and an 8vb that ends in a system where the bass staff has no notes yet. The batches
         //   drew the systems before such a wedge's or octave shift's end without it: the batch's layout didn't reach the end.
-        //   (Now the layout of the first batch reaches the end of the crescendo, in the last system, so it is the only batch.)
+        //   Now the layout of a batch reaches the end of an octave shift that goes on after the systems it draws. A wedge is drawn
+        //   to the end of a layout that ends before it does, like at a system break (it was left without lines, which logged "Not
+        //   enough lines for SkyBottomLine calculation"), and its part in a system doesn't depend on later systems: the crescendo
+        //   is drawn by several batches.
+        const messages: string[] = TestUtils.catchLogs();
         osmd.setOptions({ newSystemFromXML: true });
-        for (const [sampleFilename, measures] of [["test_wedge_multiline_crescendo.musicxml", 2],
-                                                 ["test_grace_notes_only_measure_spanners.musicxml", 1]] as [string, number][]) {
+        for (const [sampleFilename, measures, minBatches] of [["test_wedge_multiline_crescendo.musicxml", 2, 2],
+                                                             ["test_grace_notes_only_measure_spanners.musicxml", 1, 1]] as [string, number, number][]) {
             await osmd.load(TestUtils.getScore(sampleFilename));
             renderNextInOneBatch();
             const pagesInOneBatch: string[][] = drawnPages();
-            renderNextUntilDone({ measures });
+            expect(renderNextUntilDone({ measures }), `${sampleFilename}: batches`).to.be.at.least(minBatches);
             expect(drawnPages(), sampleFilename).to.deep.equal(pagesInOneBatch);
         }
+        expect(messages, "nothing logged").to.deep.equal([]);
     });
 
     it("lays out all batches at the width of the first one, and draws the stems and beams exactly where one batch draws them", async () => {
@@ -348,4 +411,297 @@ describe("OpenSheetMusicDisplay incremental rendering of the endless page in bat
         expect(drawnPages(), "drawn pages").to.deep.equal(pagesInOneBatch);
         expect(stemsAndBeams(), "stems and beams, unrounded").to.deep.equal(stemsAndBeamsInOneBatch);
     });
+
+    it("reuses the sky and bottom lines of a system only for the same measures, also when the measure numbers start again", async () => {
+        // With NewPartAndSystemAfterFinalBarline, the measure numbers start again at 1 after the final barline after measure 4:
+        //   1-4 || 1-4, one measure per system. The cache of the batches' sky and bottom lines named a system by its measure numbers,
+        //   so the second part's systems 2 and 3 got the lines of the first part's, whose high notes take more space above the staff.
+        osmd.EngravingRules.NewPartAndSystemAfterFinalBarline = true; // (read when loading)
+        osmd.setOptions({ newSystemFromXML: true });
+        const measures: string[] = [];
+        for (let index: number = 0; index < 8; index++) {
+            const attributes: string = index === 0 ? "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type>" +
+                "</time><clef><sign>G</sign><line>2</line></clef></attributes>" : "<print new-system=\"yes\"/>";
+            const [step, octave] = index === 1 || index === 2 ? ["C", 7] : ["B", 4]; // high notes in the first part's systems 2 and 3
+            const barline: string = index === 3 || index === 7 ? "<barline location=\"right\"><bar-style>light-heavy</bar-style></barline>" : "";
+            measures.push(`<measure number="${index + 1}">${attributes}<note><pitch><step>${step}</step><octave>${octave}</octave></pitch>` +
+                `<duration>4</duration><type>whole</type></note>${barline}</measure>`);
+        }
+        await osmd.load("<?xml version=\"1.0\" encoding=\"UTF-8\"?><score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">" +
+            `<part-name></part-name></score-part></part-list><part id="P1">${measures.join("")}</part></score-partwise>`);
+        expect(osmd.Sheet.SourceMeasures.map(measure => measure.MeasureNumber), "measure numbers").to.deep.equal([1, 2, 3, 4, 1, 2, 3, 4]);
+        renderNextInOneBatch();
+        const pagesInOneBatch: string[][] = drawnPages();
+        expect(renderNextUntilDone({ systems: 1 }), "batches").to.be.greaterThan(2);
+        expect(drawnPages(), "drawn pages").to.deep.equal(pagesInOneBatch);
+    });
+});
+
+describe("OpenSheetMusicDisplay incremental rendering of a draw range (renderNext)", () => {
+    // drawFromMeasureNumber and drawUpToMeasureNumber limit render() to a range of measures. renderNext() used to render the
+    //   whole sheet anyway, and to count its progress in the whole sheet.
+    let container: HTMLElement;
+    let osmd: OpenSheetMusicDisplay;
+
+    beforeEach((): void => {
+        container = TestUtils.getDivElement(document);
+        container.style.width = "1440px"; // the same layout in every browser, see the tests of the endless page in batches
+        osmd = TestUtils.createOpenSheetMusicDisplay(container); // autoResize: false
+    });
+
+    afterEach((): void => {
+        document.body.removeChild(container);
+    });
+
+    /** What is drawn in the SVG, see drawnElementsOf(). */
+    function drawnElements(): string[] {
+        const svgs: NodeListOf<SVGSVGElement> = container.querySelectorAll("svg");
+        expect(svgs.length, "one SVG in the container").to.equal(1);
+        return drawnElementsOf(svgs[0]);
+    }
+
+    /** The measure numbers in the systems laid out, e.g. "6 7 8 | 9 10 11 12". An extra measure ending a system for the key or
+     *  time of the next one has the number -1. */
+    function systemsLaidOut(): string {
+        return osmd.GraphicSheet.MusicPages.map((page: GraphicalMusicPage): string => page.MusicSystems.map((system: MusicSystem): string =>
+            system.StaffLines[0].Measures.map((measure: GraphicalMeasure): number => measure.MeasureNumber).join(" ")).join(" | ")).join(" || ");
+    }
+
+    /** The progress a renderNext() result reports, e.g. "3/8, last 8, next 9": the measures rendered and to render, and the
+     *  numbers of the last measure rendered and the next one ("none" if there is none). */
+    function progress(result: IRenderNextResult): string {
+        const measureNumber: (measures: GraphicalMeasure[]) => string =
+            (measures: GraphicalMeasure[]): string => measures.length > 0 ? String(measures[0].MeasureNumber) : "none";
+        return `${result.renderedMeasures}/${result.totalMeasures}, last ${measureNumber(result.lastRenderedMeasure)}, ` +
+            `next ${measureNumber(result.nextUnrenderedMeasure)}`;
+    }
+
+    /** Renders the loaded sheet incrementally until it is complete. Returns the progress of each batch, see progress(). */
+    function renderNextUntilDone(options: IRenderNextOptions): string[] {
+        const results: IRenderNextResult[] = [osmd.renderNext(options)];
+        while (!results[results.length - 1].done && results.length < 50) {
+            results.push(osmd.renderNext(options));
+        }
+        expect(results[results.length - 1].done, "incremental render complete").to.equal(true);
+        return results.map(progress);
+    }
+
+    it("renders the measures of the draw range system by system, counting the progress in them, and draws them as in one batch", async () => {
+        // 16 measures with a system break every 4 measures: the measures 2 to 15 are in 4 systems
+        osmd.setOptions({ newSystemFromXML: true, drawFromMeasureNumber: 2, drawUpToMeasureNumber: 15 });
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        expect(progress(osmd.IncrementalRenderProgress), "before the first batch").to.equal("0/14, last none, next none");
+        osmd.render();
+        expect(systemsLaidOut(), "render()").to.equal("2 3 4 | 5 6 7 8 | 9 10 11 12 | 13 14 15");
+        expect(renderNextUntilDone({ measures: 100 }), "one batch").to.deep.equal(["14/14, last 15, next none"]);
+        const elementsOfOneBatch: string[] = drawnElements();
+        osmd.resetIncrementalRendering(); // start again
+        expect(renderNextUntilDone({ systems: 1 })).to.deep.equal(
+            ["3/14, last 4, next 5", "7/14, last 8, next 9", "11/14, last 12, next 13", "14/14, last 15, next none"]);
+        expect(progress(osmd.IncrementalRenderProgress), "after the last batch").to.equal("14/14, last 15, next none");
+        expect(systemsLaidOut()).to.equal("2 3 4 | 5 6 7 8 | 9 10 11 12 | 13 14 15");
+        expect(drawnElements()).to.deep.equal(elementsOfOneBatch);
+    });
+
+    it("renders the measures of the draw range on a single horizontal staffline, counting the progress in them, like render()", async () => {
+        // 6 measures in 3 systems (system breaks from the XML), the first two ending with an extra measure for the key and time
+        //   of the next one: the measures 2 to 5 reach into all three
+        osmd.setOptions({ renderSingleHorizontalStaffline: true, newSystemFromXML: true, drawFromMeasureNumber: 2, drawUpToMeasureNumber: 5 });
+        await osmd.load(TestUtils.getScore("test_wavy_line_multiline_extragraphicalmeasure.musicxml"));
+        osmd.render();
+        expect(systemsLaidOut(), "render()").to.equal("2 -1 | 3 4 -1 | 5");
+        const elementsOfRender: string[] = drawnElements();
+        expect(renderNextUntilDone({ measures: 1 })).to.deep.equal(
+            ["1/4, last 2, next 3", "2/4, last 3, next 4", "3/4, last 4, next 5", "4/4, last 5, next none"]);
+        expect(systemsLaidOut()).to.equal("2 -1 | 3 4 -1 | 5");
+        expect(drawnElements()).to.deep.equal(elementsOfRender);
+    });
+
+    it("starts at the measure render() starts at in a sheet beginning with a pickup measure", async () => {
+        // the measures 0 (pickup) to 3: measure number n is at index n, not n - 1
+        osmd.setOptions({ drawFromMeasureNumber: 2, drawUpToMeasureNumber: 3 });
+        await osmd.load(TestUtils.getScore("test_metronome_mark_with_pickup_measure.musicxml"));
+        for (const horizontal of [false, true]) {
+            osmd.EngravingRules.RenderSingleHorizontalStaffline = horizontal;
+            osmd.render(); // also ends the incremental render before
+            expect(systemsLaidOut(), `render(), horizontal ${horizontal}`).to.equal("2 3");
+            expect(renderNextUntilDone({ measures: 1 }), `horizontal ${horizontal}`).to.deep.equal(horizontal
+                ? ["1/2, last 2, next 3", "2/2, last 3, next none"]
+                : ["2/2, last 3, next none"]); // one system: drawn by the first batch
+            expect(systemsLaidOut(), `horizontal ${horizontal}`).to.equal("2 3");
+        }
+    });
+
+    it("renders the draw range of a sheet loaded after one with a pickup measure, starting the cursor at its first measure", async () => {
+        // render() and renderNext() left the indices for a pickup measure in the rules (measure number n at index n, not n - 1),
+        //   which the next sheet took as the ones set: without a pickup measure, it was drawn from measure 3 to 4. And load() started
+        //   the cursor with the indices of the sheet before: at measure 1 of a sheet with a pickup measure.
+        osmd.setOptions({ newSystemFromXML: true, drawFromMeasureNumber: 2, drawUpToMeasureNumber: 3 });
+        const withoutPickup: string = "test_renderNext_copyright_below_last_system_1710.musicxml"; // measures 1-16
+        const withPickup: string = "test_metronome_mark_with_pickup_measure.musicxml"; // measures 0 (pickup) to 3
+        for (const sampleFilename of [withoutPickup, withPickup, withoutPickup]) {
+            const sheet: string = sampleFilename === withPickup ? "with a pickup measure" : "without a pickup measure";
+            await osmd.load(TestUtils.getScore(sampleFilename));
+            osmd.render();
+            expect(systemsLaidOut(), `render(), ${sheet}`).to.equal("2 3");
+            expect(osmd.cursor.Iterator.CurrentMeasure.MeasureNumber, `cursor, ${sheet}`).to.equal(2);
+            expect(renderNextUntilDone({ measures: 1 }), sheet).to.deep.equal(["2/2, last 3, next none"]); // one system: the first batch
+            expect(systemsLaidOut(), `renderNext(), ${sheet}`).to.equal("2 3");
+        }
+    });
+
+    it("renders the last measure for a draw range beginning after the sheet, like render(), with the same range in the rules", async () => {
+        osmd.setOptions({ newSystemFromXML: true, drawFromMeasureNumber: 20 }); // 16 measures
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        expect(renderNextUntilDone({ measures: 1 })).to.deep.equal(["1/1, last 16, next none"]);
+        expect(systemsLaidOut()).to.equal("16");
+        const rangeOfRenderNext: number[] = [osmd.EngravingRules.MinMeasureToDrawIndex, osmd.EngravingRules.MaxMeasureToDrawIndex];
+        osmd.render(); // the layout begins at the last measure, and puts its index into the rules
+        expect(systemsLaidOut(), "render()").to.equal("16");
+        expect(rangeOfRenderNext, "draw range in the rules").to.deep.equal(
+            [osmd.EngravingRules.MinMeasureToDrawIndex, osmd.EngravingRules.MaxMeasureToDrawIndex]);
+    });
+
+    it("moves the cursor through the measures of the draw range during an incremental render, like after render()", async () => {
+        osmd.setOptions({ newSystemFromXML: true, drawFromMeasureNumber: 6, drawUpToMeasureNumber: 13 });
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        /** The indices of the measures the cursor passes, from its start to its end. */
+        const cursorMeasureIndices: () => number[] = (): number[] => {
+            const cursor: Cursor = osmd.cursor;
+            cursor.show();
+            cursor.reset();
+            const measureIndices: number[] = [];
+            while (!cursor.Iterator.EndReached && measureIndices.length < 1000) {
+                measureIndices.push(cursor.Iterator.CurrentMeasureIndex);
+                cursor.next();
+            }
+            return measureIndices;
+        };
+        osmd.render();
+        const measureIndicesOfRender: number[] = cursorMeasureIndices();
+        expect(measureIndicesOfRender[0], "first: measure 6").to.equal(5);
+        expect(measureIndicesOfRender[measureIndicesOfRender.length - 1], "last: measure 13").to.equal(12);
+        expect(osmd.renderNext({ systems: 1 }).done, "only the first system rendered").to.equal(false);
+        expect(cursorMeasureIndices()).to.deep.equal(measureIndicesOfRender);
+    });
+
+    it("renders the draw range set before load() or render() ends the incremental render before", async () => {
+        // load() and render() used to put the draw range back to the one before the session, also when it had been changed since
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        osmd.renderNext({ measures: 4 }); // a session over the whole sheet
+        osmd.setOptions({ drawFromMeasureNumber: 6, drawUpToMeasureNumber: 13 });
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        expect(renderNextUntilDone({ measures: 8 }).pop()).to.equal("8/8, last 13, next none");
+        osmd.setOptions({ drawFromMeasureNumber: 2, drawUpToMeasureNumber: 3 });
+        osmd.render();
+        expect(systemsLaidOut()).to.equal("2 3");
+    });
+
+    // drawUpToSystemNumber and drawUpToPageNumber end the layout at a system or page: where it ends depends on the layout. The
+    //   progress of renderNext() used to count up to the last measure of the sheet, also once it was drawn up to that system.
+    it("renders the systems up to drawUpToSystemNumber, counting the progress up to their last measure once laid out", async () => {
+        // 16 measures with a system break every 4 measures: 3 systems are the measures 1 to 12
+        osmd.setOptions({ newSystemFromXML: true, drawUpToSystemNumber: 3 });
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml"));
+        osmd.render();
+        expect(systemsLaidOut(), "render()").to.equal("1 2 3 4 | 5 6 7 8 | 9 10 11 12");
+        const elementsOfRender: string[] = drawnElements();
+        expect(renderNextUntilDone({ measures: 100 }), "one batch").to.deep.equal(["12/12, last 12, next none"]);
+        osmd.resetIncrementalRendering();
+        expect(renderNextUntilDone({ systems: 1 })).to.deep.equal(
+            ["4/16, last 4, next 5", "8/16, last 8, next 9", "12/12, last 12, next none"]);
+        expect(progress(osmd.IncrementalRenderProgress), "after the last batch").to.equal("12/12, last 12, next none");
+        expect(systemsLaidOut()).to.equal("1 2 3 4 | 5 6 7 8 | 9 10 11 12");
+        expect(drawnElements()).to.deep.equal(elementsOfRender);
+    });
+
+    it("renders the pages up to drawUpToPageNumber, counting the progress up to their last measure once laid out", async () => {
+        // page breaks from the XML: the first page has the measures 1 to 12
+        osmd.setOptions({ newPageFromXML: true, drawUpToPageNumber: 1 });
+        osmd.EngravingRules.MinimumMeasureWidth = 0; // stock OSMD layout: this test expects line breaks without the fork's minimum measure width
+        await osmd.load(TestUtils.getScore("MuzioClementi_SonatinaOpus36No1_Part1.xml"));
+        osmd.render();
+        const elementsOfRender: string[] = drawnElements();
+        expect(renderNextUntilDone({ systems: 1 })).to.deep.equal(["6/38, last 6, next 7", "12/12, last 12, next none"]);
+        expect(drawnElements()).to.deep.equal(elementsOfRender);
+    });
+
+    it("renders the systems up to drawUpToSystemNumber on a single horizontal staffline, counting the progress in their measures", async () => {
+        // 6 measures in 3 systems (system breaks from the XML), the first two ending with an extra measure for the key and time
+        //   of the next one: 2 systems are the measures 1 to 4
+        osmd.setOptions({ renderSingleHorizontalStaffline: true, newSystemFromXML: true, drawUpToSystemNumber: 2 });
+        await osmd.load(TestUtils.getScore("test_wavy_line_multiline_extragraphicalmeasure.musicxml"));
+        osmd.render();
+        expect(systemsLaidOut(), "render()").to.equal("1 2 -1 | 3 4 -1");
+        const elementsOfRender: string[] = drawnElements();
+        expect(renderNextUntilDone({ measures: 1 })).to.deep.equal(
+            ["1/4, last 1, next 2", "2/4, last 2, next 3", "3/4, last 3, next 4", "4/4, last 4, next none"]);
+        expect(drawnElements()).to.deep.equal(elementsOfRender);
+    });
+});
+
+describe("OpenSheetMusicDisplay rendering with nothing to draw (render, renderNext)", () => {
+    // With no instrument visible or a draw range without measures, nothing is laid out: there's no page, and render() removes the
+    //   previous drawing from the container.
+    let container: HTMLElement;
+    let osmd: OpenSheetMusicDisplay;
+
+    beforeEach(async (): Promise<void> => {
+        container = TestUtils.getDivElement(document);
+        osmd = TestUtils.createOpenSheetMusicDisplay(container); // autoResize: false
+        await osmd.load(TestUtils.getScore("test_renderNext_copyright_below_last_system_1710.musicxml")); // 16 measures
+    });
+
+    afterEach((): void => {
+        document.body.removeChild(container);
+    });
+
+    /** Shows or hides all instruments (Instrument.Visible). */
+    function setInstrumentsVisible(visible: boolean): void {
+        for (const instrument of osmd.Sheet.Instruments) {
+            instrument.Visible = visible;
+        }
+    }
+
+    /** The ways to leave nothing to draw in the sheet: a description, a function that leaves nothing to draw, and one that undoes it. */
+    const nothingToDrawCases: [string, () => void, () => void][] = [
+        ["no instrument visible", (): void => setInstrumentsVisible(false), (): void => setInstrumentsVisible(true)],
+        ["a draw range without measures", (): void => osmd.setOptions({ drawFromMeasureNumber: 3, drawUpToMeasureNumber: 2 }),
+            (): void => osmd.setOptions({ drawFromMeasureNumber: 1, drawUpToMeasureNumber: 16 })]
+    ];
+
+    /** Draws the sheet with render() and renders it again with renderAgain in each case of nothingToDrawCases. Checks that no page
+     *  is laid out then and that the previous drawing is removed from the container. */
+    function expectPreviousDrawingRemoved(renderAgain: (situation: string) => void): void {
+        for (const [description, leaveNothingToDraw, undo] of nothingToDrawCases) {
+            osmd.render();
+            expect(container.querySelectorAll("svg").length, `${description}: drawn before`).to.equal(1);
+            leaveNothingToDraw();
+            renderAgain(description);
+            expect(osmd.GraphicSheet.MusicPages.length, `${description}: pages laid out`).to.equal(0);
+            expect(container.children.length, `${description}: elements left in the container`).to.equal(0);
+            // with no page drawn, the cursor stays hidden. On the drawing renderNext() used to leave, with no instrument visible,
+            //   it threw a TypeError: there was no visible measure to put it on.
+            osmd.cursor.show();
+            undo();
+        }
+    }
+
+    it("removes the previous drawing with render() on a single horizontal staffline, without a TypeError", (): void => {
+        // the drawing's width was taken from the first page
+        osmd.EngravingRules.RenderSingleHorizontalStaffline = true;
+        expectPreviousDrawingRemoved((): void => osmd.render());
+    });
+
+    for (const horizontal of [false, true]) {
+        const layout: string = horizontal ? "on a single horizontal staffline" : "on the endless page";
+        it(`removes the previous drawing with the first batch of renderNext(), like render(), ${layout}`, (): void => {
+            // The first batch used to leave the previous drawing in the container, and to report done at once with a draw range
+            //   without measures, without laying it out.
+            osmd.EngravingRules.RenderSingleHorizontalStaffline = horizontal;
+            expectPreviousDrawingRemoved((situation: string): void => {
+                expect(osmd.renderNext({ measures: 4 }).done, `${situation}: done`).to.equal(true);
+            });
+        });
+    }
 });

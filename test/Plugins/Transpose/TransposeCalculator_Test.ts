@@ -1,11 +1,10 @@
 import { TestUtils } from "../../Util/TestUtils";
 import { IRenderNextResult, OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { TransposeCalculator } from "../../../src/Plugins/Transpose/TransposeCalculator";
-import { ITransposeCalculator } from "../../../src/MusicalScore/Interfaces/ITransposeCalculator";
 import { GraphicalStaffEntry } from "../../../src/MusicalScore/Graphical/GraphicalStaffEntry";
 import { GraphicalNote } from "../../../src/MusicalScore/Graphical/GraphicalNote";
 import { GraphicalChordSymbolContainer } from "../../../src/MusicalScore/Graphical/GraphicalChordSymbolContainer";
-import { expect } from "chai";
+import { expect } from "vitest";
 import { GraphicalMusicSheet } from "../../../src/MusicalScore/Graphical/GraphicalMusicSheet";
 import { AccidentalEnum, NoteEnum, Pitch } from "../../../src/Common/DataObjects/Pitch";
 import { KeyInstruction, KeyEnum } from "../../../src/MusicalScore/VoiceData/Instructions/KeyInstruction";
@@ -72,40 +71,36 @@ describe("TransposeCalculator Unit Tests:", () => {
     describe("strict transpose spelling", () => {
         const strict: TransposeCalculator = calculatorWithStrictSpelling(true);
 
-        it("keeps flats flat instead of choosing an easier sharp", (done: Mocha.Done) => {
+        it("keeps flats flat instead of choosing an easier sharp", () => {
             // the four transpositions where the default mode forces Ab to a sharp
             expect(spell(strict, "Ab", 0, 2)).to.equal("Bb");   // to D major, default gives A#
             expect(spell(strict, "Ab", 0, 5)).to.equal("Db");   // to F major, default gives C#
             expect(spell(strict, "Ab", 0, 7)).to.equal("Eb");   // to G major, default gives D#
             expect(spell(strict, "Ab", 0, 10)).to.equal("Gb");  // to Bb major, default gives F#
-            done();
         });
 
-        it("keeps sharps sharp, including in keys with three or more flats", (done: Mocha.Done) => {
+        it("keeps sharps sharp, including in keys with three or more flats", () => {
             expect(spell(strict, "D#", 0, 3)).to.equal("F#");   // to Eb major, default gives Gb
             expect(spell(strict, "A#", 0, 3)).to.equal("C#");   // to Eb major, default gives Db
             expect(spell(strict, "A#", 0, 8)).to.equal("F#");   // to Ab major, default gives Gb
-            done();
         });
 
-        it("spells Cb/Fb/E#/B# instead of substituting the enharmonic natural", (done: Mocha.Done) => {
+        it("spells Cb/Fb/E#/B# instead of substituting the enharmonic natural", () => {
             expect(spell(strict, "Ab", 0, 3)).to.equal("Cb");   // b6 of Eb major, default gives B
             expect(spell(strict, "Eb", 0, 8)).to.equal("Cb");   // default gives B
             expect(spell(strict, "Db", 0, 10)).to.equal("Cb");  // default gives B
             expect(spell(strict, "B", 0, 6)).to.equal("E#");
             expect(spell(strict, "F#", 0, 6)).to.equal("B#");
-            done();
         });
 
-        it("produces double accidentals where they are the correct spelling", (done: Mocha.Done) => {
+        it("produces double accidentals where they are the correct spelling", () => {
             expect(spell(strict, "Ab", 0, 1)).to.equal("Bbb");  // up a minor 2nd
             expect(spell(strict, "Ab", 0, 8)).to.equal("Fb");
             expect(spell(strict, "C#", 0, 6)).to.equal("Fx");   // up an augmented 4th
             expect(spell(strict, "D#", 0, 6)).to.equal("Gx");
-            done();
         });
 
-        it("keeps an enclosure's written direction (the reported failure)", (done: Mocha.Done) => {
+        it("keeps an enclosure's written direction (the reported failure)", () => {
             // upper neighbour flat, lower neighbour sharp: Ab-F#-G around G, and Db-B-C around C
             const enclosures: [number, string[]][] = [
                 [2, ["Bb", "G#", "A", "Eb", "C#", "D"]],
@@ -118,10 +113,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                 const result: string[] = ["Ab", "F#", "G", "Db", "B", "C"].map(n => spell(strict, n, 0, halftones));
                 expect(result, `transposing the enclosure by ${halftones}`).to.deep.equal(expected);
             }
-            done();
         });
 
-        it("keeps enharmonically distinct notes distinct", (done: Mocha.Done) => {
+        it("keeps enharmonically distinct notes distinct", () => {
             for (const keyType of keyTypes) {
                 for (let halftones: number = -12; halftones <= 12; halftones++) {
                     if (halftones === 0) {
@@ -134,10 +128,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                         .to.not.equal(spell(strict, "Ab", keyType, halftones));
                 }
             }
-            done();
         });
 
-        it("moves every note by the same number of letter names", (done: Mocha.Done) => {
+        it("moves every note by the same number of letter names", () => {
             // this is the defining property: the transposition is one interval, applied to every note
             for (const keyType of keyTypes) {
                 for (const mode of modes) {
@@ -158,10 +151,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("uses the generic interval of the transposition, from C major", (done: Mocha.Done) => {
+        it("uses the generic interval of the transposition, from C major", () => {
             // semitones -> letter names moved: 2nds 1, 3rds 2, 4ths 3, 5th 4, 6ths 5, 7ths 6
             const expectedSteps: { [halftones: number]: number } = {
                 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 4, 8: 5, 9: 5, 10: 6, 11: 6,
@@ -171,10 +163,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                 expect(letterSteps("C", spell(strict, "C", 0, halftones)), `${halftones} halftones`)
                     .to.equal(expectedSteps[halftones]);
             }
-            done();
         });
 
-        it("takes the interval from the key pair, not from the halftone count alone", (done: Mocha.Done) => {
+        it("takes the interval from the key pair, not from the halftone count alone", () => {
             // transposeKey picks the enharmonic key signature, and the spelling follows it:
             //   Db major + 1 lands in D major, which is an augmented unison, so no letter name moves
             const augmentedUnison: [string, string][] = [
@@ -190,10 +181,9 @@ describe("TransposeCalculator Unit Tests:", () => {
             for (const [source, expected] of augmentedSecond) {
                 expect(spell(strict, source, -4, 3), `${source} in Ab major by 3`).to.equal(expected);
             }
-            done();
         });
 
-        it("gives the same spelling in major and minor keys", (done: Mocha.Done) => {
+        it("gives the same spelling in major and minor keys", () => {
             for (const keyType of keyTypes) {
                 for (let halftones: number = -12; halftones <= 12; halftones++) {
                     if (halftones === 0) {
@@ -207,10 +197,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("changes octave at the right place", (done: Mocha.Done) => {
+        it("changes octave at the right place", () => {
             const cases: [string, number, number, string, number][] = [
                 ["B", 4, 1, "C", 5],       // crossing up over B/C
                 ["B", 4, 2, "C#", 5],
@@ -233,10 +222,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                 expect(`${name(result)}${result.Octave}`, `${noteName}${octave} by ${halftones}`)
                     .to.equal(`${expectedName}${expectedOctave}`);
             }
-            done();
         });
 
-        it("preserves the exact pitch for every note, key, mode and interval", (done: Mocha.Done) => {
+        it("preserves the exact pitch for every note, key, mode and interval", () => {
             for (const keyType of keyTypes) {
                 for (const mode of modes) {
                     for (let halftones: number = -12; halftones <= 12; halftones++) {
@@ -257,10 +245,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("never returns an accidental that cannot be drawn", (done: Mocha.Done) => {
+        it("never returns an accidental that cannot be drawn", () => {
             const drawable: AccidentalEnum[] = [
                 AccidentalEnum.NONE, AccidentalEnum.NATURAL, AccidentalEnum.SHARP, AccidentalEnum.FLAT,
                 AccidentalEnum.DOUBLESHARP, AccidentalEnum.DOUBLEFLAT, AccidentalEnum.TRIPLESHARP, AccidentalEnum.TRIPLEFLAT,
@@ -279,19 +266,17 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("falls back to the default spelling when no accidental could express it", (done: Mocha.Done) => {
+        it("falls back to the default spelling when no accidental could express it", () => {
             // E## down a diminished 7th would need a quadruple flat, so the default spelling is used instead
             const fallback: Pitch = transpose(strict, pitch("Ex"), -5, -9);
             const asDefault: Pitch = transpose(calculatorWithStrictSpelling(false), pitch("Ex"), -5, -9);
             expect(name(fallback)).to.equal(name(asDefault));
             expect(fallback.getHalfTone() - pitch("Ex").getHalfTone()).to.equal(-9);
-            done();
         });
 
-        it("never needs the fallback for notes with at most one accidental", (done: Mocha.Done) => {
+        it("never needs the fallback for notes with at most one accidental", () => {
             for (const keyType of keyTypes) {
                 for (const mode of modes) {
                     for (let halftones: number = -12; halftones <= 12; halftones++) {
@@ -310,10 +295,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("maps the tonic of the original key onto the tonic of the transposed key", (done: Mocha.Done) => {
+        it("maps the tonic of the original key onto the tonic of the transposed key", () => {
             // including key signatures that are not in the mapping themselves (C# major, Cb major)
             const tonics: [number, string][] = [
                 [0, "C"], [1, "G"], [2, "D"], [3, "A"], [4, "E"], [5, "B"], [6, "F#"],
@@ -332,18 +316,15 @@ describe("TransposeCalculator Unit Tests:", () => {
                         .to.equal(tonicOfKeyType[key.Key]);
                 }
             }
-            done();
         });
 
-        it("does not throw without a key instruction", (done: Mocha.Done) => {
+        it("does not throw without a key instruction", () => {
             expect(() => strict.transposePitch(pitch("Ab"), undefined, 2)).to.not.throw();
-            done();
         });
 
-        it("returns the same pitch object when not transposing", (done: Mocha.Done) => {
+        it("returns the same pitch object when not transposing", () => {
             const source: Pitch = pitch("Eb");
             expect(strict.transposePitch(source, new KeyInstruction(undefined, 0, KeyEnum.major), 0)).to.equal(source);
-            done();
         });
     });
 
@@ -357,7 +338,7 @@ describe("TransposeCalculator Unit Tests:", () => {
             return name(defaultCalculator.transposePitch(pitch(noteName), key, halftones));
         }
 
-        it("still forces the documented sharp in the five keys that override it", (done: Mocha.Done) => {
+        it("still forces the documented sharp in the five keys that override it", () => {
             // unconditional: fires even when the note was written as a flat
             for (const mode of modes) {
                 expect(spellInKey("G", 0, 1, mode)).to.equal("G#");     // C major / A minor:  Ab -> G#
@@ -367,20 +348,18 @@ describe("TransposeCalculator Unit Tests:", () => {
                 expect(spellInKey("F", -2, 1, mode)).to.equal("F#");    // Bb major / G minor: Gb -> F#
                 expect(spellInKey("C", -1, 1, mode)).to.equal("C#");    // F major / D minor:  Db -> C#
             }
-            done();
         });
 
-        it("still spells the raised degree below in sharp keys, unless the note was flat", (done: Mocha.Done) => {
+        it("still spells the raised degree below in sharp keys, unless the note was flat", () => {
             for (const mode of modes) {
                 expect(spellInKey("E", 3, 1, mode)).to.equal("E#");     // A major / F# minor: F -> E#
                 expect(spellInKey("B", 4, 1, mode)).to.equal("B#");     // E major / C# minor: C -> B#
                 expect(spellInKey("F", 5, 2, mode)).to.equal("Fx");     // B major / G# minor: G -> Fx
                 expect(spellInKey("Gb", 3, -1, mode)).to.equal("F");    // a flat note is left alone
             }
-            done();
         });
 
-        it("still never uses sharps in keys with three or more flats", (done: Mocha.Done) => {
+        it("still never uses sharps in keys with three or more flats", () => {
             for (const keyType of [-3, -4, -5]) {
                 for (const mode of modes) {
                     for (const noteName of ["C#", "D#", "F#", "G#", "A#"]) {
@@ -389,10 +368,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("behaves identically whether rules are absent, empty or switched off", (done: Mocha.Done) => {
+        it("behaves identically whether rules are absent, empty or switched off", () => {
             const withoutRules: TransposeCalculator = new TransposeCalculator();
             const switchedOff: TransposeCalculator = calculatorWithStrictSpelling(false);
             for (const keyType of keyTypes) {
@@ -412,10 +390,9 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("preserves the exact pitch for every note, key, mode and interval", (done: Mocha.Done) => {
+        it("preserves the exact pitch for every note, key, mode and interval", () => {
             for (const keyType of keyTypes) {
                 for (const mode of modes) {
                     for (let halftones: number = -12; halftones <= 12; halftones++) {
@@ -434,13 +411,11 @@ describe("TransposeCalculator Unit Tests:", () => {
                     }
                 }
             }
-            done();
         });
 
-        it("returns the same pitch object when not transposing", (done: Mocha.Done) => {
+        it("returns the same pitch object when not transposing", () => {
             const source: Pitch = pitch("Eb");
             expect(defaultCalculator.transposePitch(source, new KeyInstruction(undefined, 0, KeyEnum.major), 0)).to.equal(source);
-            done();
         });
     });
 
@@ -453,44 +428,39 @@ describe("TransposeCalculator Unit Tests:", () => {
             return key.Key;
         }
 
-        it("picks the key signature of the transposed key", (done: Mocha.Done) => {
+        it("picks the key signature of the transposed key", () => {
             const expected: number[] = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5]; // C Db D Eb E F F# G Ab A Bb B
             for (let halftones: number = 0; halftones < 12; halftones++) {
                 expect(transposedKeyType(0, halftones), `C major by ${halftones}`).to.equal(expected[halftones]);
             }
-            done();
         });
 
-        it("wraps downwards the same way", (done: Mocha.Done) => {
+        it("wraps downwards the same way", () => {
             for (let halftones: number = 1; halftones < 12; halftones++) {
                 expect(transposedKeyType(0, -halftones), `C major by -${halftones}`)
                     .to.equal(transposedKeyType(0, 12 - halftones));
             }
-            done();
         });
 
-        it("restores the original key signature for whole octaves", (done: Mocha.Done) => {
+        it("restores the original key signature for whole octaves", () => {
             for (const keyType of keyTypes.concat([7, -7])) {
                 for (const halftones of [-24, -12, 0, 12, 24]) {
                     expect(transposedKeyType(keyType, halftones), `key ${keyType} by ${halftones}`).to.equal(keyType);
                 }
             }
-            done();
         });
 
-        it("normalizes key signatures with seven sharps or flats", (done: Mocha.Done) => {
+        it("normalizes key signatures with seven sharps or flats", () => {
             // C# major (7 sharps) is treated as Db, Cb major (7 flats) as B
             expect(transposedKeyType(7, 2)).to.equal(transposedKeyType(-5, 2));
             expect(transposedKeyType(-7, 2)).to.equal(transposedKeyType(5, 2));
-            done();
         });
 
-        it("records what it was transposed by", (done: Mocha.Done) => {
+        it("records what it was transposed by", () => {
             const key: KeyInstruction = new KeyInstruction(undefined, 0, KeyEnum.major);
             calculator.transposeKey(key, 3);
             expect(key.isTransposedBy).to.equal(3);
             expect(key.keyTypeOriginal).to.equal(0);
-            done();
         });
     });
 });
@@ -511,18 +481,15 @@ describe("TransposeCalculator", (): void => {
     describe("with a score", (): void => {
         let div: HTMLElement;
         let osmd: OpenSheetMusicDisplay;
-        let previousCalculator: ITransposeCalculator;
 
         beforeEach((): void => {
             div = TestUtils.getDivElement(document);
             div.style.width = "800px";
             osmd = TestUtils.createOpenSheetMusicDisplay(div);
-            previousCalculator = osmd.TransposeCalculator;
             osmd.TransposeCalculator = new TransposeCalculator();
         });
 
         afterEach((): void => {
-            osmd.TransposeCalculator = previousCalculator; // a static field shared by all OSMD instances
             osmd.clear();
             div.remove();
         });

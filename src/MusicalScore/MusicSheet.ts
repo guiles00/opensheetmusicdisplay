@@ -16,7 +16,7 @@ import {EngravingRules} from "./Graphical/EngravingRules";
 import {NoteState} from "./Graphical/DrawingEnums";
 import {Note} from "./VoiceData/Note";
 import {VoiceEntry} from "./VoiceData/VoiceEntry";
-import log from "loglevel";
+import { log } from "../Common/Logging";
 import { TextAlignmentEnum } from "../Common/Enums/TextAlignment";
 import { PlaybackSettings } from "../Common/DataObjects/PlaybackSettings";
 
@@ -99,6 +99,9 @@ export class MusicSheet /*implements ISettableMusicSheet, IComparable<MusicSheet
     public MeasureWidthFactor: number = 1.0;
     /** Ignore tempo instructions like metronome numbers, e.g. because a bpm was set in the UI */
     public IgnoreTempoInstructions: boolean = false;
+    /** Whether the MusicXML's 8-digit colors are #RRGGBBAA (alpha last) instead of the spec's #AARRGGBB.
+     *  Set by the reader from <software>: MuseScore exports them like that, see [[musicXmlColorsAreAlphaLast]]. */
+    public XmlColorAlphaLast: boolean = false;
     /** The default languages of the lyrics. A lyric's own xml:lang comes first, see LyricsEntry.language. */
     public LyricLanguages: LyricLanguage[] = [];
 
@@ -166,6 +169,9 @@ export class MusicSheet /*implements ISettableMusicSheet, IComparable<MusicSheet
         // (*) this.playbackSettings.BeatsPerMinute = startTempo;
         this.userStartTempoInBPM = startTempo;
     }
+    /** The start tempo the file gives, in quarter notes per minute (e.g. 60 for a metronome mark half = 30 without a
+     *  `<sound tempo>`). Setting it sets userStartTempoInBPM too.
+     */
     public get DefaultStartTempoInBpm(): number {
         return this.defaultStartTempoInBpm;
     }
@@ -480,7 +486,7 @@ export class MusicSheet /*implements ISettableMusicSheet, IComparable<MusicSheet
     //    }
     //
     //}
-    /** The tempo at the start of the piece, not the first later tempo instruction. */
+    /** The tempo at the start of the piece in quarter notes per minute, not the first later tempo instruction. */
     public getExpressionsStartTempoInBPM(): number {
         const expressions: MultiTempoExpression[] = this.TimestampSortedTempoExpressionsList;
         let me: MultiTempoExpression = expressions[0];
@@ -494,7 +500,7 @@ export class MusicSheet /*implements ISettableMusicSheet, IComparable<MusicSheet
             }
         }
         if (me.InstantaneousTempo) {
-            return me.PlaybackTempoInBpm ?? me.InstantaneousTempo.TempoInBpm;
+            return me.PlaybackTempoInBpm ?? me.InstantaneousTempo.TempoInQuarterNotesPerMinute;
         } else if (me.ContinuousTempo) {
             return me.ContinuousTempo.StartTempo;
         }
@@ -646,7 +652,7 @@ export class MusicSheet /*implements ISettableMusicSheet, IComparable<MusicSheet
         const visInstruments: Instrument[] = [];
         for (let idx: number = 0, len: number = this.Instruments.length; idx < len; ++idx) {
             const instrument: Instrument = this.Instruments[idx];
-            if (instrument.Voices.length > 0 && instrument.Voices[0].Visible) {
+            if (instrument.Visible) {
                 visInstruments.push(instrument);
             }
         }

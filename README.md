@@ -3,34 +3,24 @@
 
 
 # <img alt="OSMD logo" align="center" height="40" src="https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/assets/33069673/a83dc850-65c2-4c7a-8836-eb75cefc006f"/> OpenSheetMusicDisplay (OSMD)
-<!--# <img alt="OSMD logo" align="center" src="https://opensheetmusicdisplay.org/wp-content/uploads/2016/05/OSMD_3_icon_only.svg"/> OpenSheetMusicDisplay (OSMD)-->
-<!--- # <img alt="OSMD logo" align="center" src="https://opensheetmusicdisplay.org/wp-content/uploads/sites/2/2021/02/OSMD_logo_box.svg" height="40"/> OpenSheetMusicDisplay (OSMD) -->
-
-<!--table style="table-layout: fixed; width:100%; border: none; border-collapse: collapse;">
-  <tr>
-    <td><img id="osmdlogo" alt="OpenSheetMusicDisplay (OSMD)" src="https://opensheetmusicdisplay.org/wp-content/uploads/2016/05/OSMD_3_icon_only.svg"/></td>
-   <td style="text-align: center"><h1>OpenSheetMusicDisplay (OSMD)</h1></td>
-    <td></td>
-  </tr>
-</table-->
 
 ### A MusicXML renderer for the Browser
 [opensheetmusicdisplay.org](https://opensheetmusicdisplay.org/)<br>
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/opensheetmusicdisplay/opensheetmusicdisplay?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-[![Appveyor Build status](https://ci.appveyor.com/api/projects/status/r88lnffso55nq1ko?svg=true)](https://ci.appveyor.com/project/sebastianhaas/opensheetmusicdisplay/branch/master)
+[![Discord](https://img.shields.io/badge/Discord-chat-5865F2?logo=discord&logoColor=white)](https://fwd.osmd.org/discord)
+[![CI](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/opensheetmusicdisplay)](https://www.npmjs.com/package/opensheetmusicdisplay)
 [![Commitizen friendly](https://img.shields.io/badge/commitizen-friendly-brightgreen.svg)](http://commitizen.github.io/cz-cli/)<br>
 
 <!-- [![Greenkeeper badge](https://badges.greenkeeper.io/opensheetmusicdisplay/opensheetmusicdisplay.svg)](https://greenkeeper.io/) --> <!-- move to Snyk -->
 <!-- [![Dependency Status](https://david-dm.org/opensheetmusicdisplay/opensheetmusicdisplay/status.svg)](https://david-dm.org/opensheetmusicdisplay/opensheetmusicdisplay) --> <!-- often returns error "no healthy upstream" -->
-<!-- [![Travis Build Status](https://travis-ci.org/opensheetmusicdisplay/opensheetmusicdisplay.svg?branch=master)](https://travis-ci.org/opensheetmusicdisplay/opensheetmusicdisplay) --> <!-- Migrate to travis-ci.com -->
-[About OSMD](#about-osmd) • [Demo](#demo) • [Key Features](#key-features) • [Limitations](#limitations) • [How to Use OSMD](#how-to-use-osmd) • [Sponsor OSMD](#sponsor-osmd) • [About Us](#about-us) • [Get In Touch](#get-in-touch)
+[About OSMD](#about-osmd) • [Demo](#demo) • [Key Features](#key-features) • [Limitations](#limitations) • [How to Use OSMD](#how-to-use-osmd) • [Sponsor OSMD](#sponsor-osmd-and-get-early-access-to-the-audio-player-and-more) • [About Us](#about-us) • [Get In Touch](#get-in-touch)
 
 :star: - Star us on Github - It really helps us a lot!<br>
-:pray: - [Become our Sponsor](#sponsor-osmd) - Support our work and receive awesome perks!
+:pray: - [Become our Sponsor](#sponsor-osmd-and-get-early-access-to-the-audio-player-and-more) - Support our work and receive awesome perks!
 
 ## About OSMD
 
-<img title="How OSMD can look in the browser&#xA;(Mockup, OSMD on its own does not support playback)" src="https://user-images.githubusercontent.com/33069673/106186552-bd191300-61a4-11eb-8814-07019fcf1d5b.png" style="max-width: 100%; max-height: 100vh; width: auto; margin: auto;">
+<img title="How OSMD can look in the browser&#xA;(Mockup, OSMD on its own does not support playback)" alt="OSMD rendering Beethoven's Ode to Joy for voice, piano and guitar tab in light and dark mode, with a playback cursor" src="https://github.com/user-attachments/assets/6268e243-be9e-42ec-b62d-9067a0903e67" style="max-width: 100%; max-height: 100vh; width: auto; margin: auto;">
 
 OpenSheetMusicDisplay renders MusicXML sheet music in the browser. It is the missing link between [MusicXML](https://www.musicxml.com/) and [VexFlow](https://www.vexflow.com/). Built upon many years of experience in both sheet music interactivity and engraving, it is the perfect solution for app developers seeking to build digital sheet music services.
 
@@ -44,7 +34,7 @@ OpenSheetMusicDisplay brings the two together and offers an open source turnkey 
 Try the [Public Demo](https://opensheetmusicdisplay.github.io/demo/) to see what OSMD can do.<br>
 [Learn more about the demo](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Exploring-the-Demo) and OSMD in [the OSMD Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki).
 
-Developers can also run a [local development demo (see Wiki)](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Debugging-(VSCode)):
+Developers can also run a [local development demo (see Wiki)](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Debugging):
 
 <img title="Local OSMD Development/Debug demo" alt="Local OSMD Developer Demo" src="https://user-images.githubusercontent.com/33069673/106189263-5695f400-61a8-11eb-901f-aafc853af497.png" style="max-width: 100%; max-height: 100vh; width: auto; margin: auto;">
 
@@ -52,14 +42,19 @@ Developers can also run a [local development demo (see Wiki)](https://github.com
 ## Key Features
 
 * Displays MusicXML sheet music in a browser(less) environment (Javascript, Typescript, server-side: headless/browserless NodeJS script)
-* *Soon: Audio Playback (work in progress, early access build available for [Github sponsors](https://github.com/sponsors/opensheetmusicdisplay))*
+* Audio playback: the OSMD Audio Player is available in early access for [Github sponsors](https://github.com/sponsors/opensheetmusicdisplay), see [below](#sponsor-osmd-and-get-early-access-to-the-audio-player-and-more)
 * Uses [Vexflow](https://www.vexflow.com/) for rendering and (partly) layout
 * Parses most MusicXML tags and integrates it into an accessible and modifiable data model (e.g. to change a note's color)
 * Offers many options ([OSMDOptions](https://opensheetmusicdisplay.github.io/classdoc/classes/OSMDOptions.html) / [EngravingRules](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/blob/master/src/MusicalScore/Graphical/EngravingRules.ts)): Page Format, Font Family, Positioning, not rendering certain elements like the title or lyrics, etc.
-* Allows modification of the displayed score, like hiding parts or instruments, hiding instrument names, title or composer, a more compact layout, or coloring notes
+* Allows modification of the displayed score, like hiding parts, instruments or voices, hiding instrument names, title or composer, a more compact layout, or coloring notes
+* Transposes the score, or single instruments, by semitones, optionally keeping the note spelling (transposing by interval), see [Transposing | Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Transposing)
+* A cursor to step through the notes (e.g. for playback or practice apps), and finding the note at a click position
+* Fast rendering, and incremental rendering for large scores: draws the first systems right away and the rest as the user scrolls (`renderNext()`, see [Getting Started | Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Getting-Started#large-scores-incremental-rendering))
+* SVG elements with classes naming what they show (e.g. `vf-stavenote`, `osmd-lyrics`, `osmd-title`), so they can be styled with CSS
 * Outputs SVG or PNG, also via nodejs script in the command line, completely headless/browserless (e.g. for server-side rendering - see generateImages script)
 * Written in [Typescript](https://www.typescriptlang.org/) with complete type information, 100% compatible with Javascript (minified build is .js)
-* Can display tablature (guitar tabs) from MusicXML, including effects like bends and glissandi. Can be combined with treble clef.
+* Can display tablature (guitar tabs) from MusicXML, including effects like bends and glissandi, optionally with the rhythm (stems, beams). Can be combined with treble clef.
+* Music Braille output: converts a score into braille music notation (Unicode braille), see the [Braille module's README](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/blob/develop/src/Plugins/Braille/README.md)
 <img src="https://user-images.githubusercontent.com/33069673/127324371-b7c5f137-a1b8-4127-95b0-38e6a185c906.png" height="130">
 
 
@@ -71,11 +66,12 @@ Developers can also run a [local development demo (see Wiki)](https://github.com
 
 ## Limitations
 
-Not all MusicXML tags and attributes are (fully) supported:
-* Advanced Pedal marks (down/up brackets and lift wedge currently in early access for sponsors, "Ped." and "*" signs supported)
+Not all MusicXML tags and attributes are (fully) supported, e.g.:
 * Some attributes like special drums noteheads/glyphs
 
-Also, **OSMD is a renderer, not a full interactive sheet music editor.** Rendering takes some time for long scores, and you can't easily/quickly move notes, place new notes, etc.<br>
+If something in your MusicXML file isn't displayed as expected, please check our [Issues](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/issues?&q=is%3Aissue) or open a new one, ideally with the file (or a part of it).
+
+Also, **OSMD is a renderer, not a full interactive sheet music editor.** Rendering takes some time for long scores (incremental rendering shows the first systems quickly), and you can't easily/quickly move notes, place new notes, etc.<br>
 There are however limited editing features like making notes invisible, coloring, hiding some instruments/staffs, not showing key or time signatures, and so on, see IOSMDOptions and EngravingRules<br>
 (You can manipulate the SVG nodes for instant changes like note re-coloring, see [Exploring the Demo | Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Exploring-the-Demo))
 
@@ -83,6 +79,8 @@ There are however limited editing features like making notes invisible, coloring
 
 * Available as [NPM module](https://www.npmjs.com/package/opensheetmusicdisplay), can be used with plain javascript or module managers like webpack
 * [Getting Started: Detailed instructions in our Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Getting-Started)
+* What's new: [changelog](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/blob/develop/CHANGELOG.md), [releases](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/releases), and our [blog](https://opensheetmusicdisplay.org/blog/) with the highlights of each release
+* Contributing: see [Contributing | Wiki](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/wiki/Contributing)
 * If you have further technical questions, you can:
   * [Leave a comment in our Discussions section](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/discussions/950) (especially for questions of understanding)
   * [Browse through our Issues](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/issues?&q=is%3Aissue)
@@ -102,16 +100,21 @@ to fit that minimum keep their existing formatting. Set the option to `0` to dis
 <!--img src="https://user-images.githubusercontent.com/33069673/104042293-99ccfa80-51da-11eb-9dc9-fac075a33224.png" height="200" alt="OSMD on Github Sponsors"--><img src="https://user-images.githubusercontent.com/33069673/109203612-a9150100-77a4-11eb-9b91-6692850dccab.png" style="max-width: 100%; max-height: 100vh; width: auto; margin: auto;">
 </a><br>
 
-It would be great if free software were sustainable on its own. But to keep on improving and developing OpenSheetMusicDisplay we need your support. Your monthly sponsorship subscription - especially if you are already actively using OSMD - would mean everything to us - it’s a stable way of enabling us to continue our work, and improve and expand OSMD.<br>
-Features already available in early access:
+It would be great if free software were sustainable on its own. But to keep on improving and developing OpenSheetMusicDisplay we need your support. Your monthly sponsorship subscription - especially if you are already actively using OSMD - would mean everything to us - it’s a stable way of enabling us to continue our work, and improve and expand OSMD.
+
+Features already available in early access for [Github Sponsors](https://github.com/sponsors/opensheetmusicdisplay):
 * OSMD Audio Player
-* Native modules + example projects (React Native, Kotlin/Android, Swift/iOS) - NEW!
+* Audio Export (save the playback as a WAV or MP3 file, rendered in the browser, much faster than real time) - NEW!
+* Native modules + example projects (React Native, Kotlin/Android, Swift/iOS)
 * Jianpu Display (Numbered Musical Notation), with playback
+* Annotations (text comments and music symbols, e.g. dynamics or fermatas, on the score) - NEW!
+  * Anchored to a beat on their staff, so they move with the music when the layout changes (width, zoom, page format, parts shown)
+  * Kept in layers (e.g. one per person) that can be shown or hidden, and saved and loaded as XML files
+  * Added and edited in the included menu, or in your own UI via the API
 
-Features in the making, potentially available in future:
+<img alt="Annotations in three layers (teacher, singer, pianist) on a Beethoven song, and the layers tab of the annotations menu" title="Annotations in three layers, and the annotations menu" src="https://github.com/user-attachments/assets/d121793b-bd83-4ed4-a900-3c4afc0ef0a5" width="100%">
 
-* Annotations (Add custom text, music symbols, etc. to the score and export to and import from XML)
-* and more (we're always working on OSMD improvements or additional features, just look at our release history / [changelog](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/blob/develop/CHANGELOG.md)!)
+More is in the making: we're always working on OSMD improvements and additional features, just look at our release history / [changelog](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/blob/develop/CHANGELOG.md)!
 
 Besides the early access features, you can get other perks like a personal postcard from the team in Vienna. Check them out at [our GitHub sponsors page](https://github.com/sponsors/opensheetmusicdisplay).
 
@@ -121,7 +124,7 @@ Besides the early access features, you can get other perks like a personal postc
   <img title="OSMD button sponsor perk" src="https://user-images.githubusercontent.com/33069673/106320576-5a427d00-6273-11eb-96b0-d2c7c4b19927.jpg" width="28.5%">
 </p>
 
-And there are other ways to contribute to the community - we plan on starting a blog and newsletter, and sharing our knowledge. We encourage our sponsors to bring up their desired features and pitch blog post ideas.
+And there are other ways to contribute to the community - we write about each release and our work on our [blog](https://opensheetmusicdisplay.org/blog/), and share our knowledge. We encourage our sponsors to bring up their desired features and pitch blog post ideas.
 
 Though we highly recommend the sponsor route, you can also donate via Paypal:<br>
 
@@ -149,5 +152,4 @@ To contact us directly, you can:
 * Use the [Contact form on opensheetmusicdisplay.org](https://opensheetmusicdisplay.org/contact/) to send a mail
 * Send a mail to support@opensheetmusicdisplay.org
 * Leave a (public) comment in our [Discussions section](https://github.com/opensheetmusicdisplay/opensheetmusicdisplay/discussions)
-* [Join our Discord (chat) Server](https://fwd.osmd.org/discord)
-* [Join the chat on Gitter](https://gitter.im/opensheetmusicdisplay/opensheetmusicdisplay).
+* [Join our Discord (chat) Server](https://fwd.osmd.org/discord).

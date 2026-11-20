@@ -10,6 +10,8 @@ export class Slur {
     private startNote: Note;
     private endNote: Note;
     public PlacementXml: PlacementEnum; // how the slur is placed in the XML
+    /** Start-marker line type, retained while SlurReader pairs slides/glissandi. */
+    public LineTypeXml: string;
     /** Whether the slur's end isn't attached to a note: its start note also has a stop of its number that ended no earlier
      *  slur, which Dolet for Sibelius writes e.g. for a slur running into a repeat barline (#1516). While it has no end note,
      *  it's drawn to the barline if its start note is the last note of its measure, and not at all otherwise.
@@ -55,6 +57,9 @@ export class Slur {
         }
         return (this.startNote.ParentStaffEntry.ParentStaff !== this.endNote.ParentStaffEntry.ParentStaff);
     }
+    /** Whether another slur at the start or end note of this slur is shorter. GraphicalSlur then gives this slur
+     *  SlursStartingAtSameStaffEntryYOffset where it starts or ends at the same note as another slur, so that the shorter
+     *  slur is closest to the notes (Behind Bars p. 113). */
     public isSlurLonger(): boolean {
         if (!this.endNote || !this.startNote) {
             return false;
@@ -66,7 +71,7 @@ export class Slur {
                 slur !== this
                 && slur.EndNote !== undefined
                 && slur.StartNote !== undefined
-                && Fraction.minus(slur.EndNote.getAbsoluteTimestamp(), slur.StartNote.getAbsoluteTimestamp()).CompareTo(length) === -1
+                && Fraction.minus(slur.EndNote.getAbsoluteTimestamp(), slur.StartNote.getAbsoluteTimestamp()).lt(length)
             ) {
                 return true;
             }
@@ -77,7 +82,7 @@ export class Slur {
                 slur !== this
                 && slur.EndNote !== undefined
                 && slur.StartNote !== undefined
-                && Fraction.minus(slur.EndNote.getAbsoluteTimestamp(), slur.StartNote.getAbsoluteTimestamp()).CompareTo(length)
+                && Fraction.minus(slur.EndNote.getAbsoluteTimestamp(), slur.StartNote.getAbsoluteTimestamp()).lt(length)
             ) {
                 return true;
             }

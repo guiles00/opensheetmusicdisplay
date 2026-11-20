@@ -19,7 +19,7 @@ import { NoteEnum } from "../../Common/DataObjects/Pitch";
 import { Staff } from "../VoiceData/Staff";
 import { StaffEntryLink } from "../VoiceData/StaffEntryLink";
 import { VerticalSourceStaffEntryContainer } from "../VoiceData/VerticalSourceStaffEntryContainer";
-import log from "loglevel";
+import { log } from "../../Common/Logging";
 import { Pitch } from "../../Common/DataObjects/Pitch";
 import { IXmlAttribute } from "../../Common/FileIO/Xml";
 import { CollectionUtil } from "../../Util/CollectionUtil";
@@ -28,7 +28,7 @@ import { SlurReader } from "./MusicSymbolModules/SlurReader";
 import { Notehead } from "../VoiceData/Notehead";
 import { Arpeggio, ArpeggioType } from "../VoiceData/Arpeggio";
 import { NoteType, NoteTypeHandler } from "../VoiceData/NoteType";
-import { TabNote } from "../VoiceData/TabNote";
+import { TabNote, TabBendSegment } from "../VoiceData/TabNote";
 import { PlacementEnum } from "../VoiceData/Expressions/AbstractExpression";
 import { ReaderPluginManager } from "./ReaderPluginManager";
 import { Instrument } from "../Instrument";
@@ -72,6 +72,11 @@ export class VoiceGenerator {
   private openTupletNumber: number = 0;
   /** The last tremolo between (two) notes started in this voice, awaiting its stop note. */
   private openTremoloBetweenNotes: TremoloBetweenNotes;
+  /** The beam of the chord whose part on another staff continueChordInStaffEntry() just created: the part's first note joins it. */
+  private chordPartBeam: Beam;
+  /** The tuplet of the chord whose part on another staff continueChordInStaffEntry() created, if its first note is in one: the
+   *  part's notes join it, also after the first note stopped it (see handleTimeModificationNode()). */
+  private chordPartTuplet: Tuplet;
 
   public get GetVoice(): Voice {
     return this.voice;
@@ -94,10 +99,36 @@ export class VoiceGenerator {
    */
   public createVoiceEntry(musicTimestamp: Fraction, parentStaffEntry: SourceStaffEntry, addToVoice: boolean,
                           isGrace: boolean = false, graceNoteSlash: boolean = false, graceSlur: boolean = false): void {
+    this.chordPartBeam = undefined;
+    this.chordPartTuplet = undefined;
     this.currentVoiceEntry = new VoiceEntry(musicTimestamp.clone(), this.voice, parentStaffEntry, isGrace, graceNoteSlash, graceSlur);
     if (addToVoice) {
       this.voice.VoiceEntries.push(this.currentVoiceEntry);
     }
+  }
+
+  /**
+   * Continues the current chord with a note on another staff than the chord's previous note (<chord/> with another
+   * <staff>), e.g. a piano chord split between the staves of the two hands: makes the chord's voice entry in the staff
+   * entry of that staff the current one, creating it if needed. So each staff draws its part of the chord, with a stem of
+   * its own (a stem from one staff to the other isn't drawn), and a new part's first note joins the chord's beam, its notes
+   * the chord's tuplet. Does nothing for a note on the staff of the chord's previous note.
+   * @param staffEntry The staff entry of the note's staff at the chord's timestamp.
+   */
+  public continueChordInStaffEntry(staffEntry: SourceStaffEntry): void {
+    const chordVoiceEntry: VoiceEntry = this.currentVoiceEntry;
+    if (!chordVoiceEntry || chordVoiceEntry.ParentSourceStaffEntry === staffEntry ||
+        chordVoiceEntry.Timestamp.RealValue !== staffEntry.Timestamp?.RealValue) {
+      return;
+    }
+    const part: VoiceEntry = staffEntry.VoiceEntries.find((voiceEntry: VoiceEntry) => voiceEntry.ParentVoice === this.voice && !voiceEntry.IsGrace);
+    if (part) {
+      this.currentVoiceEntry = part;
+      return;
+    }
+    this.createVoiceEntry(chordVoiceEntry.Timestamp, staffEntry, true);
+    this.chordPartBeam = chordVoiceEntry.Notes[0]?.NoteBeam;
+    this.chordPartTuplet = chordVoiceEntry.Notes[0]?.NoteTuplet;
   }
 
   /**
@@ -157,6 +188,13 @@ export class VoiceGenerator {
           }
           if (glissElements.length > 0) {
             this.slurReader.addSlur(glissElements, this.currentNote);
+          }
+        } else if (this.slurReader !== undefined && this.currentNote.ParentVoiceEntry.IsGrace) {
+          // A slur that starts on a grace note is drawn by VexFlow, from the grace notes to their main note (see VoiceEntry.GraceSlur).
+          //   One that stops on a grace note (e.g. from a trilled note to its termination) is read like any other slur.
+          const slurStopElements: IXmlElement[] = slurElements.filter((slurElement: IXmlElement) => slurElement.attribute("type")?.value === "stop");
+          if (slurStopElements.length > 0) {
+            this.slurReader.addSlur(slurStopElements, this.currentNote);
           }
         }
         // read Tuplets
@@ -255,7 +293,7 @@ export class VoiceGenerator {
         "ReaderErrorMessages/NoteError", "Ignored erroneous Note."
       );
       this.musicSheet.SheetErrors.pushMeasureError(errorMsg);
-      this.musicSheet.SheetErrors.pushMeasureError(err);
+      this.musicSheet.SheetErrors.pushMeasureError(err?.message ?? String(err));
     }
 
     return this.currentNote;
@@ -360,6 +398,7 @@ export class VoiceGenerator {
     let playbackInstrumentId: string = undefined;
     let noteheadShapeXml: string = undefined;
     let noteheadFilledXml: boolean = undefined; // if undefined, the final filled parameter will be calculated from duration
+    let invalidStepElement: IXmlElement = undefined;
 
     const xmlnodeElementsArr: IXmlElement[] = node.elements();
     for (let idx: number = 0, len: number = xmlnodeElementsArr.length; idx < len; ++idx) {
@@ -373,14 +412,11 @@ export class VoiceGenerator {
             noteheadFilledXml = undefined;
             try {
               if (pitchElement.name === "step") {
-                noteStep = NoteEnum[pitchElement.value];
-                if (noteStep === undefined) { // don't replace undefined check
-                  const errorMsg: string = ITextTranslation.translateText(
-                    "ReaderErrorMessages/NotePitchError",
-                    "Invalid pitch while reading note."
-                  );
-                  this.musicSheet.SheetErrors.pushMeasureError(errorMsg);
-                  throw new MusicSheetReadingException(errorMsg, undefined);
+                const step: NoteEnum = this.readStep(pitchElement);
+                if (step === undefined) { // don't replace undefined check
+                  invalidStepElement = pitchElement; // the note is left out, see below
+                } else {
+                  noteStep = step;
                 }
               } else if (pitchElement.name === "alter") {
                 noteAlter = parseFloat(pitchElement.value);
@@ -447,7 +483,12 @@ export class VoiceGenerator {
             }
           }
           if (displayStepElement) {
-            noteStep = NoteEnum[displayStepElement.value.toUpperCase()];
+            const step: NoteEnum = this.readStep(displayStepElement);
+            if (step === undefined) {
+              invalidStepElement = displayStepElement; // the note is left out, see below
+              continue;
+            }
+            noteStep = step;
             let octaveShift: number = 0;
             let noteValueShift: number = this.musicSheet.Rules.PercussionXMLDisplayStepNoteValueShift;
             if (stafflineCount === 1) {
@@ -475,18 +516,23 @@ export class VoiceGenerator {
       }
     }
 
+    if (invalidStepElement) {
+      // No note without a step (a note of any other step would be a guess, and one without can't be drawn):
+      //   read() leaves the note out and adds the message to the measure's errors.
+      throw this.createInvalidStepError(invalidStepElement);
+    }
     noteOctave -= Pitch.OctaveXmlDifference;
     const pitch: Pitch = new Pitch(noteStep, noteOctave, noteAccidental, accidentalValue);
     const noteLength: Fraction = Fraction.createFromFraction(noteDuration);
     let note: Note = undefined;
     let stringNumber: number = -1; //1 to always recognize as valid tab note
     let fretNumber: number = -1; //0 to always recognize as valid tab note
-    const bends: {bendalter: number, direction: string}[] = [];
+    const bends: TabBendSegment[] = [];
     // check for guitar tabs:
+    // InstrumentReader already combines repeated notations into the first block.
     const notationNode: IXmlElement = node.element("notations");
     if (notationNode) {
-      const technicalNode: IXmlElement = notationNode.element("technical");
-      if (technicalNode) {
+      for (const technicalNode of notationNode.elements("technical")) {
         const stringNode: IXmlElement = technicalNode.element("string");
         if (stringNode) {
           stringNumber = parseInt(stringNode.value, 10);
@@ -499,10 +545,12 @@ export class VoiceGenerator {
         bendElementsArr.forEach(function (bend: IXmlElement): void {
             const bendalterNote: IXmlElement = bend.element("bend-alter");
             const releaseNode: IXmlElement = bend.element("release");
-            if (releaseNode !== undefined) {
-              bends.push({bendalter: parseInt (bendalterNote.value, 10), direction: "down"});
+            // a negative bend-alter is a release (MuseScore writes no <release/>), or a pre-bend, marked by <pre-bend/>
+            const isPreBend: boolean = bend.element("pre-bend") !== undefined;
+            if (releaseNode !== undefined || (parseFloat(bendalterNote.value) < 0 && !isPreBend)) {
+              bends.push({bendalter: parseFloat(bendalterNote.value), direction: "down"});
             } else {
-              bends.push({bendalter: parseInt (bendalterNote.value, 10), direction: "up"});
+              bends.push({bendalter: parseFloat(bendalterNote.value), direction: "up"});
             }
           });
       }
@@ -515,6 +563,8 @@ export class VoiceGenerator {
       // create TabNote
       note = new TabNote(this.currentVoiceEntry, this.currentStaffEntry, noteLength, pitch, this.currentMeasure,
                          stringNumber, fretNumber, bends);
+      (note as TabNote).FretVisible = notationNode?.attribute("print-object")?.value !== "no";
+      (note as TabNote).FretParentheses = node.element("notehead")?.attribute("parentheses")?.value === "yes";
     }
 
     this.addNoteInfo(note, noteTypeXml, printObject, isCueNote, normalNotes,
@@ -545,6 +595,11 @@ export class VoiceGenerator {
     }
     if (node.elements("beam") && !chord) {
       this.createBeam(node, note);
+    } else if (chord && this.chordPartBeam) {
+      // the first note of a chord's part on another staff (continueChordInStaffEntry()): in the chord's beam, so that its
+      //   staff beams the chords' parts too. Not in the beam's note list, whose positions SecondaryBreakIndices refer to.
+      note.NoteBeam = this.chordPartBeam;
+      this.chordPartBeam = undefined;
     }
     return note;
   }
@@ -564,9 +619,16 @@ export class VoiceGenerator {
     let displayOctave: number;
     let pitch: Pitch = undefined;
     if (displayStepElement && octaveElement) {
-        displayStep = NoteEnum[displayStepElement.value.toUpperCase()];
-        displayOctave = parseInt(octaveElement.value, 10);
-        pitch = new Pitch(displayStep, displayOctave, AccidentalEnum.NONE, undefined, true);
+        displayStep = this.readStep(displayStepElement);
+        if (displayStep === undefined) {
+          // the rest stays, at its default position
+          const error: Error = this.createInvalidStepError(displayStepElement, "The rest is at its default position.");
+          log.warn(error.message);
+          this.musicSheet.SheetErrors.pushMeasureError(error.message);
+        } else {
+          displayOctave = parseInt(octaveElement.value, 10);
+          pitch = new Pitch(displayStep, displayOctave, AccidentalEnum.NONE, undefined, true);
+        }
     }
     const restNote: Note = new Note(this.currentVoiceEntry, this.currentStaffEntry, restFraction, pitch, this.currentMeasure, true);
     this.addNoteInfo(restNote, noteTypeXml, printObject, isCueNote, normalNotes, displayStep, displayOctave, noteheadColorXml, noteheadColorXml);
@@ -574,9 +636,34 @@ export class VoiceGenerator {
     //  (e.g. quarter rest - but length different due to tuplet). see MusicSheetCalculator.calculateTupletNumbers()
     this.currentVoiceEntry.Notes.push(restNote);
     if (this.openBeams.length > 0) {
-      this.openBeams.last().ExtendedNoteList.push(restNote);
+      CollectionUtil.getLastElement(this.openBeams).ExtendedNoteList.push(restNote);
     }
     return restNote;
+  }
+
+  /**
+   * Returns the step of a <step> or <display-step> element, or undefined if its value isn't one of A to G (in upper or
+   * lower case). Not NoteEnum[value]: that is also defined for "toString" (an object's method) and for "0" (the name "C").
+   */
+  private readStep(stepElement: IXmlElement): NoteEnum {
+    const step: string = stepElement.value?.trim().toUpperCase();
+    return step?.length === 1 && "CDEFGAB".includes(step) ? NoteEnum[step as keyof typeof NoteEnum] : undefined;
+  }
+
+  /**
+   * Creates the error for a <step> or <display-step> element that readStep() can't read. Its message names the measure, the
+   * part and the value, like InstrumentReader's warnings for a skipped element, e.g.
+   * 'Measure 12 of part "Flute" (P1): invalid step "H", a step is one of A to G. The note is left out.'
+   * @param consequence what the reader does about it, appended to the message
+   */
+  private createInvalidStepError(stepElement: IXmlElement, consequence: string = "The note is left out."): MusicSheetReadingException {
+    const instrument: Instrument = this.voice.Parent;
+    // the measure's number in the file, or its position if that isn't read (the measure is added to the sheet after it's read)
+    const measureNumber: string = this.currentMeasure.MeasureNumberXML?.toString() ?? `at position ${this.musicSheet.SourceMeasures.length + 1}`;
+    return new MusicSheetReadingException(
+      `Measure ${measureNumber} of part "${instrument.Name}" (${instrument.IdString}): ` +
+      `invalid ${stepElement.name} "${stepElement.value}", a step is one of A to G. ${consequence}`
+    );
   }
 
   // common for "normal" notes and rest notes
@@ -635,22 +722,29 @@ export class VoiceGenerator {
    */
   private createBeam(node: IXmlElement, note: Note): void {
     try {
-      const beamNode: IXmlElement = node.element("beam");
+      // The primary beam (number 1) first, whatever the element order: a note listing <beam number="2"> before
+      //   <beam number="1"> (e.g. a sixteenth triplet inside an eighth beam) was read by its secondary beam, whose
+      //   begin closed the primary one, so the beam broke there: the eighth before the triplet and the triplet were
+      //   drawn with flags. Stable sort, so the usual order is unchanged.
+      const numberOf: (element: IXmlElement) => number = (element: IXmlElement) =>
+        parseInt(element.attribute("number")?.value, 10) || 1;
+      const sortedBeamNodes: IXmlElement[] = node.elements("beam").slice().sort((a, b) => numberOf(a) - numberOf(b));
+      const beamNode: IXmlElement = sortedBeamNodes[0];
       let beamAttr: IXmlAttribute = undefined;
       if (beamNode !== undefined && beamNode.hasAttributes) {
         beamAttr = beamNode.attribute("number");
       }
       if (beamAttr) {
         let beamNumber: number = parseInt(beamAttr.value, 10);
-        const mainBeamNode: IXmlElement[] = node.elements("beam");
+        const mainBeamNode: IXmlElement[] = sortedBeamNodes;
         const currentBeamTag: string = mainBeamNode[0].value;
         if (mainBeamNode) {
           if (currentBeamTag === "begin") {
-            if (beamNumber === this.openBeams.last()?.BeamNumber) {
+            if (beamNumber === CollectionUtil.getLastElement(this.openBeams)?.BeamNumber) {
               // beam with same number already existed (error in XML), bump beam number
               this.beamNumberOffset++;
               beamNumber += this.beamNumberOffset;
-            } else if (this.openBeams.last()) {
+            } else if (CollectionUtil.getLastElement(this.openBeams)) {
                 this.handleOpenBeam();
             }
             this.openBeams.push(new Beam(beamNumber, this.beamNumberOffset));
@@ -711,7 +805,7 @@ export class VoiceGenerator {
    * Check for open [[Beam]]s at end of [[SourceMeasure]] and closes them explicity.
    */
   private handleOpenBeam(): void {
-    const openBeam: Beam = this.openBeams.last();
+    const openBeam: Beam = CollectionUtil.getLastElement(this.openBeams);
     if (openBeam.Notes.length === 0) {
       // TODO why is there such a beam? sample: test_percussion_display_step_from_xml
       this.endBeam(); // otherwise beamLastNote.ParentStaffEntry will throw an undefined error
@@ -738,9 +832,9 @@ export class VoiceGenerator {
           for (let idx: number = 0, len: number = nextStaffEntry.VoiceEntries.length; idx < len; ++idx) {
             const voiceEntry: VoiceEntry = nextStaffEntry.VoiceEntries[idx];
             if (voiceEntry.ParentVoice === this.voice) {
-              const candidateNote: Note = voiceEntry.Notes[0];
-              if (candidateNote.Length.lte(new Fraction(1, 8))) {
-                this.openBeams.last().addNoteToBeam(candidateNote);
+              const candidateNote: Note = voiceEntry.Notes[0]; // undefined if the entry's note was left out as erroneous
+              if (candidateNote?.Length.lte(new Fraction(1, 8))) {
+                CollectionUtil.getLastElement(this.openBeams).addNoteToBeam(candidateNote);
                 this.endBeam();
               } else {
                 this.endBeam();
@@ -1061,9 +1155,10 @@ export class VoiceGenerator {
       }
 
     } else if (this.currentVoiceEntry.Notes.length > 0) {
-      const firstNote: Note = this.currentVoiceEntry.Notes[0];
-      if (firstNote.NoteTuplet) {
-        const tuplet: Tuplet = firstNote.NoteTuplet;
+      // a chord's note after the tuplet's stop note: in the tuplet of the chord's first note. In a part of the chord on another
+      //   staff (continueChordInStaffEntry()), the voice entry's first note is the part's own, without the tuplet.
+      const tuplet: Tuplet = this.chordPartTuplet ?? this.currentVoiceEntry.Notes[0].NoteTuplet;
+      if (tuplet) {
         const notes: Note[] = CollectionUtil.last(tuplet.Notes);
         notes.push(this.currentNote);
         this.linkNoteToTuplet(this.currentNote, tuplet);
@@ -1249,6 +1344,9 @@ export class VoiceGenerator {
     for (const key in openTieDict) {
       if (openTieDict.hasOwnProperty(key)) {
         const tie: Tie = openTieDict[key];
+        if (tie.StartNote === candidateNote) {
+          continue; // A note cannot stop the tie it has just started.
+        }
         const tieTabNote: TabNote = tie.Notes[0] as TabNote;
         const tieCandidateNote: TabNote = candidateNote as TabNote;
         if (tie.Pitch.FundamentalNote === candidateNote.Pitch.FundamentalNote && tie.Pitch.Octave === candidateNote.Pitch.Octave) {
@@ -1263,6 +1361,9 @@ export class VoiceGenerator {
     for (const key in openTieDict) {
       if (openTieDict.hasOwnProperty(key)) {
         const tie: Tie = openTieDict[key];
+        if (tie.StartNote === candidateNote) {
+          continue; // A note cannot stop the tie it has just started.
+        }
         if (tie.Pitch.getHalfTone() === candidateNote.Pitch.getHalfTone()) {
           return parseInt(key, 10);
         }

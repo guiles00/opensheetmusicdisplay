@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { IXmlElement } from "../../../src/Common/FileIO/Xml";
 import { MusicSheetReader } from "../../../src/MusicalScore/ScoreIO/MusicSheetReader";
 import { MusicSheet } from "../../../src/MusicalScore/MusicSheet";
@@ -27,8 +27,11 @@ interface LabelRect {
  * @param filename the sample file name in test/data
  * @returns the calculated GraphicalMusicSheet
  */
-function buildGraphicalMusicSheet(filename: string): GraphicalMusicSheet {
+function buildGraphicalMusicSheet(filename: string, stockMeasureWidths: boolean = false): GraphicalMusicSheet {
     const reader: MusicSheetReader = new MusicSheetReader();
+    if (stockMeasureWidths) {
+        reader.rules.MinimumMeasureWidth = 0; // the fork's minimum measure width leaves no measure "too narrow"
+    }
     const calculator: MusicSheetCalculator = new VexFlowMusicSheetCalculator(reader.rules);
     const xml: Document = TestUtils.getScore(filename);
     expect(xml, "sample file is loaded").to.not.equal(undefined);
@@ -103,8 +106,8 @@ describe("Chord symbol and repetition instruction collision avoidance", () => {
         let graphicalSheet: GraphicalMusicSheet;
         let staffLines: StaffLine[];
 
-        before((): void => {
-            graphicalSheet = buildGraphicalMusicSheet(filename);
+        beforeAll((): void => {
+            graphicalSheet = buildGraphicalMusicSheet(filename, true);
             staffLines = [];
             for (const page of graphicalSheet.MusicPages) {
                 for (const system of page.MusicSystems as MusicSystem[]) {
@@ -145,7 +148,7 @@ describe("Chord symbol and repetition instruction collision avoidance", () => {
         let measures: VexFlowMeasure[];
         let staffLine: StaffLine;
 
-        before((): void => {
+        beforeAll((): void => {
             graphicalSheet = buildGraphicalMusicSheet(filename);
             measures = graphicalSheet.MeasureList.map(
                 (measuresOfAllStaves: VexFlowMeasure[]): VexFlowMeasure => measuresOfAllStaves[0]);

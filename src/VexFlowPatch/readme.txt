@@ -6,9 +6,17 @@ note: this patch will likely create errors when used with a different vexflow ve
 if using a different vexflow version, disable this prebuild patch script in package.json.
 
 These files are custom patches for the currently installed vexflow version.
-They are copied by the npm prebuild script to ../../node_modules/vexflow/src/ before a build.
+They are copied by the npm prebuildVexflow script to ../../node_modules/vexflow/src/ before a build,
+and before npm test, test:watch, start and start:local, which use node_modules/vexflow/src without a build.
+vitest.config.mjs also copies the changed files when Vitest starts, e.g. for npx vitest or an editor's Vitest extension.
 Each .js has comments like "// VexFlowPatch: [explanation]" to indicate what was changed.
 (a diff can be created from the base vexflow version)
+
+All source files of vexflow 1.2.93 are here, also the ones without patches (unchanged originals, not listed below),
+so that a build of any commit uses exactly that commit's vexflow sources: the prebuild copy only overwrites files,
+and a file patched later would otherwise stay patched in node_modules when building an older commit.
+When patching one of them, its diff then only shows the patch (the "// VexFlowPatch:" lines).
+Left out: the fonts that vexflow 1.2.93 doesn't import (fonts/gonville*.js, custom_glyphs.js, microtonal.js).
 
 articulation.js (custom addition):
 respect modifier.y_shift (y_shift affects y position of rendering)
@@ -74,6 +82,15 @@ pedalmarking.js (custom addition):
 Add rendering options for pedals that break across systems.
 draw(): draw the marks and brackets in a group, class vf-pedalmarking (custom addition), which a pedal marking of one shape
   is merged into and one without shapes doesn't get (see svgcontext.js)
+drawText(): draw the * of a pedal released and pressed again at its last note (ChangeEnd) left of the Ped. sign there,
+  render_options.change_release_margin away from it (getChangeReleaseXShift(), custom addition)
+drawBracketed(): where the next pedal marking draws its Ped. sign at the last note (ChangeEndBeforeSign), end the line with
+  its hook render_options.change_release_margin left of that sign instead of the change notch (custom addition)
+drawBracketed(): an open end (a pedal going on in the next system) goes on to the end of the stave (end_x), not only to
+  the end of its last note (custom addition)
+drawBracketed(), drawText(): for a pedal going on from the system before (ContinuationSign), draw (Ped.), the Ped. sign in
+  the parentheses of cautionary accidentals, at the stave's note start, the line after it (drawContinuationSign(),
+  getContinuationSignWidth(), custom addition)
 
 renderer.js (vexflow4: need to check if possible):
 CanvasContext: getContext(): use willReadFrequently option for marginal performance potential,
@@ -93,6 +110,12 @@ draw(): draw the barline in a group, class vf-stavebarline (merged vexflow 4), w
   and a barline without shapes doesn't get (see svgcontext.js)
 renderInitialLine false: a begin repeat barline without the line at the stave's start (custom addition, for OSMD's repeat
   at the start of a one-staff system, which replaced the barline's draw() before)
+
+staveconnector.js (custom fix):
+BRACKET: apply x_shift like BRACE (setXShift() was ignored for a bracket), so that a nested group's bracket can stand
+  a column further left (OSMD's VexFlowInstrumentBracket.Column)
+add DOUBLE_HEAVY_RIGHT (9): the two heavy lines of a heavy-heavy barline joining the staves, at the x of the staves'
+  Barline.type.DOUBLE_HEAVY end barlines (see stavebarline.js, VexFlowConverter.line())
 
 stavenote.js (custom addition):
 Fix stem/flag formatting. Instead of shifting notes by default, update the stem/flag rendering to render different voices aligned.

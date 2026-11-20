@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { SystemVirtualizationController } from "../../src/OpenSheetMusicDisplay/SystemVirtualizationController";
 
 describe("SystemVirtualizationController", () => {

@@ -207,6 +207,13 @@ export abstract class MusicSheetDrawer {
         const widthInPixel: number = this.calculatePixelDistance(graphicalLabel.PositionAndShape.Size.width);
         const bitmapWidth: number = Math.ceil(widthInPixel);
         const bitmapHeight: number = Math.ceil(fontHeightInPixel * (0.2 + graphicalLabel.TextLines.length));
+        // The text is drawn with its baseline one font height below screenPosition.y (see renderLabel()), and the label's box
+        //   (GraphicalLabel.setLabelPositionAndShapeBorders()) is one font height per line: about 0.8 above the baseline for the
+        //   ascenders and 0.2 below it for the descenders. So the top of a bottom-aligned text is the whole bitmap height (lines + 0.2)
+        //   above the label's position, and that of a center-aligned one half the lines + 0.2: with only half of the bitmap height
+        //   (lines / 2 + 0.1) the text was drawn 0.1 font heights below its box, and the descender of e.g. the f of a dynamic
+        //   above the staff reached through the box's margin onto the note under it.
+        const centerAlignedTop: number = fontHeightInPixel * (0.2 + graphicalLabel.TextLines.length / 2);
 
         switch (label.textAlignment) {
             // Adjust the OSMD-calculated positions to rendering coordinates
@@ -215,7 +222,7 @@ export abstract class MusicSheetDrawer {
             case TextAlignmentEnum.LeftTop:
                 break;
             case TextAlignmentEnum.LeftCenter:
-                screenPosition.y -= bitmapHeight / 2;
+                screenPosition.y -= centerAlignedTop;
                 break;
             case TextAlignmentEnum.LeftBottom:
                 screenPosition.y -= bitmapHeight;
@@ -225,7 +232,7 @@ export abstract class MusicSheetDrawer {
                 break;
             case TextAlignmentEnum.CenterCenter:
                 screenPosition.x -= bitmapWidth / 2;
-                screenPosition.y -= bitmapHeight / 2;
+                screenPosition.y -= centerAlignedTop;
                 break;
             case TextAlignmentEnum.CenterBottom:
                 screenPosition.x -= bitmapWidth / 2;
@@ -236,7 +243,7 @@ export abstract class MusicSheetDrawer {
                 break;
             case TextAlignmentEnum.RightCenter:
                 screenPosition.x -= bitmapWidth;
-                screenPosition.y -= bitmapHeight / 2;
+                screenPosition.y -= centerAlignedTop;
                 break;
             case TextAlignmentEnum.RightBottom:
                 screenPosition.x -= bitmapWidth;
@@ -257,7 +264,8 @@ export abstract class MusicSheetDrawer {
      * Adds a class naming what a drawn element shows (e.g. "osmd-slur") to the SVG group it was drawn into, next to the
      * class naming its shape (e.g. vf-curve), so that CSS and code can find e.g. all slurs. Labels get theirs from
      * GraphicalLabel.SVGClass (see drawLabel()); the drawer names slurs (osmd-slur), the lines of wedges (osmd-wedge),
-     * lyric extender lines (osmd-extender) and the strokes of tremolos between notes and buzz rolls (osmd-tremolo).
+     * the dashed lines after texts like "cresc. - - - -" (osmd-expression-dashes), lyric extender lines (osmd-extender) and the strokes
+     * of tremolos between notes and buzz rolls (osmd-tremolo).
      * @param node the group, undefined if nothing was drawn, e.g. with the canvas backend
      * @param className the class
      */
@@ -387,6 +395,7 @@ export abstract class MusicSheetDrawer {
                 }
             }
         }
+        this.drawCrossStaffBeams(musicSystem);
         for (const systemLine of musicSystem.SystemLines) {
             this.drawSystemLineObject(systemLine);
         }
@@ -443,6 +452,11 @@ export abstract class MusicSheetDrawer {
         // empty
     }
 
+    /** Draws the beams across the staves of the system, after all its staves (see VexFlowMeasure.drawCrossStaffBeams()). */
+    protected drawCrossStaffBeams(musicSystem: MusicSystem): void {
+        // empty
+    }
+
     protected drawStaffLine(staffLine: StaffLine): void {
         for (const measure of staffLine.Measures) {
             this.drawMeasure(measure);
@@ -460,6 +474,8 @@ export abstract class MusicSheetDrawer {
         this.drawWavyLines(staffLine);
 
         this.drawExpressions(staffLine);
+
+        this.drawDashedLinesAfterTexts(staffLine);
 
         // (lazy horizontal: the staffline's whole lines, once, by the first batch reaching it)
         if (this.skyLineVisible && this.lazyDrawsLeftEdgeOnce()) {
@@ -494,6 +510,11 @@ export abstract class MusicSheetDrawer {
     }
 
     protected drawExpressions(staffline: StaffLine): void {
+        // implemented by subclass (VexFlowMusicSheetDrawer)
+    }
+
+    /** Draws the dashed lines after texts in the staffline (StaffLine.ExpressionDashes), e.g. "cresc. - - - -". */
+    protected drawDashedLinesAfterTexts(staffLine: StaffLine): void {
         // implemented by subclass (VexFlowMusicSheetDrawer)
     }
 

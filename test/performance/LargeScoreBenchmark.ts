@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { OpenSheetMusicDisplay } from "../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { generateLargePianoScore, ILargeScoreFixtureOptions } from "./LargeScoreFixtures";
 
@@ -19,7 +19,7 @@ const benchmarkWindow: IBenchmarkWindow = window as unknown as IBenchmarkWindow;
 const benchmarkArgs: string[] = benchmarkWindow.__karma__?.config?.args ?? [];
 const benchmarkEnabled: boolean = benchmarkArgs.includes("bench");
 const boundedCache: boolean = benchmarkArgs.includes("bounded");
-const describeBenchmark: Mocha.SuiteFunction | Mocha.PendingSuiteFunction = benchmarkEnabled ? describe : describe.skip;
+const describeBenchmark: typeof describe.skip = benchmarkEnabled ? describe : describe.skip;
 const benchmarkLabel: string = benchmarkArgs.find(arg => arg.startsWith("label="))?.slice("label=".length) ?? "current";
 
 function distribution(samples: number[]): IDistribution {
@@ -158,8 +158,7 @@ const FIXTURES: [string, ILargeScoreFixtureOptions][] = [
     ["piano-500-breaks", { measures: 500, graceEvery: 8, tieEvery: 4, systemBreakEvery: 4 }]
 ];
 
-describeBenchmark("Large score benchmark", function (): void {
-    this.timeout(30 * 60 * 1000);
+describeBenchmark("Large score benchmark", { timeout: 30 * 60 * 1000 }, (): void => {
 
     for (const [name, fixture] of FIXTURES) {
         it(name, async () => {

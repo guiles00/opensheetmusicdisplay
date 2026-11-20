@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect, onTestFinished, vi } from "vitest";
 import * as OSMDExports from "../../../src";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
@@ -56,10 +56,14 @@ describe("OSMD clear() and dispose()", () => {
         return paths;
     }
 
-    /** The paths (see referencedBy()) to the sheet's graphical objects and to the SVG elements they drew. */
+    /** The paths (see referencedBy()) to the sheet's graphical objects and to the SVG elements they drew. Not the warm keeper's
+     *  (see OpenSheetMusicDisplay.KeepWarm): a separate small rendering the instance keeps on purpose. */
     function pathsToRendering(paths: Map<object, string>, drawnElements: Element[]): string[] {
         const found: string[] = [];
         paths.forEach((path: string, object: object) => {
+            if (path.includes(".warmKeeper")) {
+                return;
+            }
             if (object instanceof GraphicalMusicSheet || object instanceof GraphicalObject) {
                 found.push(path);
             }
@@ -178,10 +182,18 @@ describe("OSMD clear() and dispose()", () => {
         };
     }
 
+    /** Until the test ends, autoResize listens to the window's resize events, as in a browser without ResizeObserver
+     *  (Chrome before 64, Firefox before 69, Safari before 13.1). With it, autoResize observes the container instead. */
+    function listenToWindow(): void {
+        vi.stubGlobal("ResizeObserver", undefined);
+        onTestFinished((): void => { vi.unstubAllGlobals(); });
+    }
+
     it("dispose() removes the listeners on the window and ends incremental rendering, and the drawing stays", async () => {
         const container: HTMLElement = TestUtils.getDivElement(document);
         const windowListeners: IListenerRecord = recordListeners(window);
         try {
+            listenToWindow();
             const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container); // autoResize is on by default
             expect(windowListeners.count("resize"), "with autoResize").to.equal(1);
             await osmd.load(TestUtils.getScore(sampleName));
@@ -204,6 +216,7 @@ describe("OSMD clear() and dispose()", () => {
         const container: HTMLElement = TestUtils.getDivElement(document);
         const windowListeners: IListenerRecord = recordListeners(window);
         try {
+            listenToWindow();
             const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container); // autoResize is on by default
             expect(windowListeners.count("resize"), "with autoResize").to.equal(1);
             osmd.setOptions({ autoResize: false });
@@ -220,6 +233,13 @@ describe("OSMD clear() and dispose()", () => {
             expect(windowListeners.count("resize"), "after dispose()").to.equal(0);
             new OpenSheetMusicDisplay(container, { autoResize: false }).dispose();
             expect(windowListeners.count("resize"), "created with autoResize false").to.equal(0);
+            // with ResizeObserver, autoResize observes the container instead of listening to the window
+            vi.unstubAllGlobals();
+            if (typeof ResizeObserver === "function") {
+                const observing: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container);
+                expect(windowListeners.count("resize"), "with autoResize and ResizeObserver").to.equal(0);
+                observing.dispose();
+            }
         } finally {
             windowListeners.restore();
             container.remove();
@@ -229,21 +249,21 @@ describe("OSMD clear() and dispose()", () => {
     it("turning autoResize on again re-renders a rendered sheet only if the container's width changed meanwhile", async () => {
         const container: HTMLElement = TestUtils.getDivElement(document);
         container.style.width = "800px";
-        /** Waits for the re-render that turning autoResize on schedules (timers of 0 and 1 ms), if any. */
-        const timers: () => Promise<void> = (): Promise<void> => new Promise((resolve: () => void) => setTimeout(resolve, 100));
         try {
             const osmd: OpenSheetMusicDisplay = new OpenSheetMusicDisplay(container); // autoResize is on by default
             await osmd.load(TestUtils.getScore(sampleName));
             osmd.render();
             const rendered: number = osmd.EngravingRules.RenderCount;
+            // turning autoResize on schedules the re-render, if any, with timers of 0 and 1 ms: run them on Vitest's fake clock
+            TestUtils.useFakeClock();
             osmd.setOptions({ autoResize: false });
             osmd.setOptions({ autoResize: true });
-            await timers();
+            vi.runAllTimers();
             expect(osmd.EngravingRules.RenderCount, "renders after off and on, same width").to.equal(rendered);
             osmd.AutoResizeEnabled = false;
             container.style.width = "600px";
             osmd.AutoResizeEnabled = true;
-            await timers();
+            vi.runAllTimers();
             expect(osmd.EngravingRules.RenderCount, "renders after off, a narrower container, and on").to.equal(rendered + 1);
             osmd.dispose();
         } finally {
@@ -275,6 +295,7 @@ describe("OSMD clear() and dispose()", () => {
         const instances: OpenSheetMusicDisplay[] = [];
         try {
             global.WeakRef = ReleasableWeakRef;
+            listenToWindow();
             instances.push(new OpenSheetMusicDisplay(containers[0])); // autoResize is on by default
             global.WeakRef = undefined; // like browsers before 2021: then the listener keeps the instance
             instances.push(new OpenSheetMusicDisplay(containers[1]));
@@ -290,14 +311,11 @@ describe("OSMD clear() and dispose()", () => {
                 instance.render();
             }
             const rendered: number = osmd.EngravingRules.RenderCount;
+            // on Vitest's fake clock, also its Date, which the listener measures the time since the last resize event with
+            TestUtils.useFakeClock();
             listener(new Event("resize"));
             listenerWithoutWeakRef(new Event("resize"));
-            for (let waited: number = 0; waited < 2000; waited += 20) {
-                if (instances.every((instance: OpenSheetMusicDisplay) => instance.EngravingRules.RenderCount > rendered)) {
-                    break;
-                }
-                await new Promise<void>((resolve: () => void) => setTimeout(resolve, 20));
-            }
+            vi.advanceTimersByTime(200);
             expect(osmd.EngravingRules.RenderCount, "renders after a resize").to.equal(rendered + 1);
             expect(osmdWithoutWeakRef.EngravingRules.RenderCount, "renders after a resize, without WeakRef").to.equal(rendered + 1);
 

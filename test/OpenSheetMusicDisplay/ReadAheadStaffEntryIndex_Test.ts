@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { OpenSheetMusicDisplay } from "../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { GraphicalNote } from "../../src/MusicalScore/Graphical/GraphicalNote";
 import { TestUtils } from "../Util/TestUtils";

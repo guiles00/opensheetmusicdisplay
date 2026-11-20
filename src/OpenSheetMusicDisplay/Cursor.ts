@@ -17,6 +17,7 @@ import { CursorOptions, CursorType } from "./OSMDOptions";
 import { BoundingBox } from "../MusicalScore/Graphical/BoundingBox";
 import { GraphicalNote } from "../MusicalScore/Graphical/GraphicalNote";
 import { SmoothScroll } from "../Util/SmoothScroll";
+import { CollectionUtil } from "../Util/CollectionUtil";
 
 /** A cursor which can iterate through the music sheet. */
 export class Cursor {
@@ -130,14 +131,10 @@ export class Cursor {
     const lastSheetMeasureIndex: number = this.openSheetMusicDisplay.Sheet.SourceMeasures.length - 1; // last measure in data model
     let startMeasureIndex: number = this.rules.MinMeasureToDrawIndex;
     startMeasureIndex = Math.min(startMeasureIndex, lastSheetMeasureIndex);
+    // Under incremental rendering (renderNext()), this is the session's draw range too, not the end of the measures
+    //   rendered so far: the cursor can step across all of them and is positioned lazily (update() no-ops where not yet
+    //   rendered; a later batch repositions it once that measure is drawn).
     let endMeasureIndex: number = this.rules.MaxMeasureToDrawIndex;
-    if (this.rules.LazyConsistentGraphic) {
-      // Under lazy rendering MaxMeasureToDrawIndex is only the current (growing) frontier, not a fixed
-      //   draw range, so clamp the cursor to the whole sheet: it can step across the entire score and is
-      //   positioned lazily (update() no-ops where not yet rendered; a later batch repositions it once
-      //   that measure is drawn). Playback already seeks by timestamp and is unaffected by this range.
-      endMeasureIndex = lastSheetMeasureIndex;
-    }
     endMeasureIndex = Math.min(endMeasureIndex, lastSheetMeasureIndex);
 
     if (this.openSheetMusicDisplay.Sheet && this.openSheetMusicDisplay.Sheet.SourceMeasures.length > startMeasureIndex) {
@@ -186,10 +183,13 @@ export class Cursor {
     let currentMeasureIndex: number = iterator.CurrentMeasureIndex;
     let x: number = 0, y: number = 0, height: number = 0;
     let musicSystem: MusicSystem;
+    let firstPositionWithoutVisibleNotes: boolean = false;
     if (voiceEntries.length === 0 && !iterator.FrontReached && !iterator.EndReached) {
       // e.g. when the note at the current position is in an instrument that's now invisible, and there's no other note at this position, vertically
       iterator.moveToPrevious();
       voiceEntries = iterator.CurrentVisibleVoiceEntries();
+      // nothing before it: the sheet's first position has no visible notes, e.g. after reset() when the sheet starts with a hidden rest
+      firstPositionWithoutVisibleNotes = iterator.FrontReached;
       iterator.moveToNext();
       // after this, the else condition below should trigger, positioning the cursor at the left-most note. See #1312
     }
@@ -202,6 +202,11 @@ export class Cursor {
       x = firstVisibleMeasure.PositionAndShape.AbsolutePosition.x;
       musicSystem = firstVisibleMeasure.ParentMusicSystem;
       iterator.moveToPrevious();
+    } else if (firstPositionWithoutVisibleNotes) {
+      // show the beginning of the first measure, as before the first note (above), not the end of the measure (below)
+      const firstVisibleMeasure: GraphicalMeasure = this.findVisibleGraphicalMeasure(iterator.CurrentMeasureIndex);
+      x = firstVisibleMeasure?.PositionAndShape.AbsolutePosition.x;
+      musicSystem = firstVisibleMeasure?.ParentMusicSystem;
     } else if (iterator.EndReached || !iterator.CurrentVoiceEntries || voiceEntries.length === 0) {
       // show end of last measure (of stafflines, to create a visual difference to the first note position)
       //   this position is technically after the sheet/last note - e.g. cursor.Iterator.CurrentTimestamp.RealValue = 99999
@@ -278,7 +283,7 @@ export class Cursor {
       // But standard OSMD only scrolls vertically unless it's single horizontal staffline.
 
       if (this.cursorOptions.followCursorPolyfill) {
-        if (!this.openSheetMusicDisplay.EngravingRules.RenderSingleHorizontalStaffline) {
+      if (!this.openSheetMusicDisplay.EngravingRules.RenderSingleHorizontalStaffline) {
           // Only scroll if Y position changed (i.e., system change).
           // This prevents "bonkers" vertical scrolling when advancing cursor horizontally within the same system.
           const yChanged: boolean = this.previousY === undefined || Math.abs(this.previousY - y) > 0.1;
@@ -306,9 +311,10 @@ export class Cursor {
     this.cursorElement.style.display = "";
   }
 
+  /** Returns the graphical measure of the first visible staff at the given (zero-based source) measure index. */
   private findVisibleGraphicalMeasure(measureIndex: number): GraphicalMeasure {
     for (let i: number = 0; i < this.graphic.NumberOfStaves; i++) {
-      const measure: GraphicalMeasure = this.graphic.findGraphicalMeasure(this.iterator.CurrentMeasureIndex, i);
+      const measure: GraphicalMeasure = this.graphic.findGraphicalMeasure(measureIndex, i);
       if (measure?.ParentStaff.isVisible()) {
         return measure;
       }
@@ -367,6 +373,16 @@ export class Cursor {
         rendered.color !== this.cursorOptions.color || rendered.alpha !== this.cursorOptions.alpha) {
       this.updateStyle(newWidth, this.cursorOptions);
     }
+  }
+
+  /**
+   * Upstream carries the drawn cursor image over a re-render here. The fork's cursor is a CSS-styled element without
+   * an image, so only the rendered options are carried over, which keeps update() from restyling an unchanged cursor.
+   */
+  public useImageOf(otherCursor: Cursor): void {
+    if (otherCursor.cursorOptionsRendered) {
+    this.cursorOptionsRendered = otherCursor.cursorOptionsRendered;
+  }
   }
 
   /** Hide the cursor. */
@@ -464,7 +480,7 @@ export class Cursor {
       timestamp = new Fraction(0, 0);
     }
     for (const page of this.graphic.MusicPages) {
-      const lastSystemTimestamp: Fraction = page.MusicSystems.last().GetSystemsLastTimeStamp();
+      const lastSystemTimestamp: Fraction = CollectionUtil.getLastElement(page.MusicSystems).GetSystemsLastTimeStamp();
       if (lastSystemTimestamp.gt(timestamp)) {
         // gt: the last timestamp of the last system is equal to the first of the next page,
         //   so we do need to use gt, not gte here.
@@ -531,50 +547,55 @@ export class Cursor {
     this.cursorOptions = undefined;
   }
 
+  /** Moves to the first position of the next measure in playback order (repetitions unrolled, like next()),
+   *  from the last measure to the end.
+   */
   public nextMeasure(): void {
     if (!this.iterator) {
       return; // the sheet was released, see releaseSheet()
     }
-    const startMeasure: SourceMeasure = this.Iterator.CurrentMeasure;
-    let previousTime: number = this.Iterator.currentTimeStamp.RealValue;
+    const iterator: MusicPartManagerIterator = this.iterator;
+    if (iterator.FrontReached) {
+      this.next(); // the front is before the first measure, so that's the next one
+      return;
+    }
+    const startMeasure: SourceMeasure = iterator.CurrentMeasure;
+    let previousTimestamp: number = iterator.currentTimeStamp.RealValue;
     this.next();
-    let iterations: number = 0;
-    const maxIterations: number = 999;
-    while (this.Iterator.CurrentMeasure === startMeasure &&
-      this.Iterator.currentTimeStamp.RealValue !== previousTime &&
-      iterations < maxIterations // prevent infinite loop (not expected but for safety)
+    // in one pass through a measure, the timestamps only grow: a smaller one in the same measure starts its next pass,
+    //   e.g. of a measure that is repeated by itself
+    while (!iterator.EndReached && iterator.CurrentMeasure === startMeasure &&
+      iterator.currentTimeStamp.RealValue > previousTimestamp
     ) {
-      previousTime = this.Iterator.currentTimeStamp.RealValue;
+      previousTimestamp = iterator.currentTimeStamp.RealValue;
       this.next();
-      iterations++;
     }
   }
 
+  /** Moves to the first position of the previous measure in score order (like previous(), which doesn't unroll
+   *  repetitions backwards): from the end to the last measure, from the first measure to the front (before the first note).
+   *  A measure's first position is its first one with visible notes, e.g. the one after a hidden rest.
+   */
   public previousMeasure(): void {
     if (!this.iterator) {
       return; // the sheet was released, see releaseSheet()
     }
-    const startMeasure: SourceMeasure = this.Iterator.CurrentMeasure;
-    let previousTime: number = this.Iterator.currentTimeStamp.RealValue;
+    const iterator: MusicPartManagerIterator = this.iterator;
+    // the end is after the last measure (though the iterator's CurrentMeasure is the last one there)
+    const startMeasure: SourceMeasure = iterator.EndReached ? undefined : iterator.CurrentMeasure;
     this.previous();
-    let iterations: number = 0;
-    const maxIterations: number = 999;
-    while (this.Iterator.CurrentMeasure === startMeasure &&
-      this.Iterator.currentTimeStamp.RealValue !== previousTime &&
-      iterations < maxIterations // prevent infinite loop (not expected but for safety)
-    ) {
-      previousTime = this.Iterator.currentTimeStamp.RealValue;
+    while (!iterator.FrontReached && iterator.CurrentMeasure === startMeasure) {
       this.previous();
-      iterations++;
     }
-
-    // move to start of measure
-    iterations = 0;
-    while (this.Iterator.CurrentRelativeInMeasureTimestamp.RealValue !== 0 &&
-      iterations < maxIterations
-    ) {
+    // to the measure's first position: when that's after the start of the measure (e.g. after a hidden rest),
+    //   moving back from it leaves the measure, so move forward again
+    const measure: SourceMeasure = iterator.CurrentMeasure;
+    while (!iterator.FrontReached && iterator.CurrentRelativeInMeasureTimestamp.RealValue > 0) {
       this.previous();
-      iterations++;
+      if (iterator.FrontReached || iterator.CurrentMeasure !== measure) {
+        this.next();
+        return;
+      }
     }
   }
 }

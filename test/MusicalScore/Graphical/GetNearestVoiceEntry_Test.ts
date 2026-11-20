@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { GraphicalMusicSheet } from "../../../src/MusicalScore/Graphical/GraphicalMusicSheet";
@@ -48,7 +48,7 @@ describe("GetNearestVoiceEntry", () => {
         container.remove();
     });
 
-    /** Loads and renders the sample: a MusicXML file, or an MXL file from the karma server. */
+    /** Loads and renders the sample: a MusicXML file, or an MXL file from the test server. */
     async function renderSheet(sampleName: string): Promise<GraphicalMusicSheet> {
         container.innerHTML = "";
         const osmd: OpenSheetMusicDisplay = TestUtils.createOpenSheetMusicDisplay(container);

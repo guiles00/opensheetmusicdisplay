@@ -8,7 +8,7 @@ import { BoundingBox } from "./BoundingBox";
 import { PlacementEnum } from "../VoiceData/Expressions/AbstractExpression";
 import { SkyBottomLineCalculator } from "./SkyBottomLineCalculator";
 import { ISqueezable } from "./ISqueezable";
-import log from "loglevel";
+import { log } from "../../Common/Logging";
 import { SourceMeasure } from "../VoiceData/SourceMeasure";
 
 /**
@@ -181,7 +181,7 @@ export class GraphicalContinuousDynamicExpression extends AbstractGraphicalExpre
      */
     public recalculateCrescendoLines(startX: number, endX: number, y: number): void {
         const isSecondHalfSplit: boolean = Math.abs(this.lines[0].Start.y - this.lines[1].Start.y) > 0.0001;
-        this.lines.clear();
+        this.lines.length = 0;
 
         if (isSecondHalfSplit) {
             this.createSecondHalfCrescendoLines(startX, endX, y);
@@ -253,7 +253,7 @@ export class GraphicalContinuousDynamicExpression extends AbstractGraphicalExpre
      */
     public recalculateDiminuendoLines(startX: number, endX: number, yPosition: number): void {
         const isFirstHalfSplit: boolean = Math.abs(this.lines[0].End.y - this.lines[1].End.y) > 0.0001;
-        this.lines.clear();
+        this.lines.length = 0;
         if (isFirstHalfSplit) {
             this.createFirstHalfDiminuendoLines(startX, endX, yPosition);
         } else if (this.isSplittedPart) {
@@ -292,6 +292,19 @@ export class GraphicalContinuousDynamicExpression extends AbstractGraphicalExpre
         } else if (this.ContinuousDynamic.DynamicType === ContDynamicEnum.diminuendo) {
             this.createSecondHalfDiminuendoLines(startX, endX, y,
                 wedgeMeasureBeginOpeningLength, wedgeLineWidth);
+        }
+    }
+
+    /** Wrapper for createSecondHalfCrescendoLines and createFirstHalfDiminuendoLines, see createFirstHalfLines: the lines of a
+     *  part of a wedge that goes on before and after it, e.g. in a system between the wedge's first and last one. A crescendo
+     *  looks like its part in its last system then, not starting at a point, and a diminuendo like its part in its first system,
+     *  not ending at a point, so that the wedge doesn't look finished.
+     */
+    public createInbetweenLines(startX: number, endX: number, y: number): void {
+        if (this.ContinuousDynamic.DynamicType === ContDynamicEnum.crescendo) {
+            this.createSecondHalfCrescendoLines(startX, endX, y);
+        } else if (this.ContinuousDynamic.DynamicType === ContDynamicEnum.diminuendo) {
+            this.createFirstHalfDiminuendoLines(startX, endX, y);
         }
     }
 
@@ -339,7 +352,7 @@ export class GraphicalContinuousDynamicExpression extends AbstractGraphicalExpre
      * Clear Lines
      */
     public cleanUp(): void {
-        this.lines.clear();
+        this.lines.length = 0;
     }
 
     /**

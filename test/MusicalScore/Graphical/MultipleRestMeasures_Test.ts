@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { GraphicalMeasure } from "../../../src/MusicalScore/Graphical/GraphicalMeasure";
@@ -52,8 +52,9 @@ describe("Multiple rest measures", () => {
         const timeSignatures: string[] = Array.from(container.querySelectorAll(".vf-timesignature"))
             .filter(time => !time.closest(".vf-multirest")).map(time => time.closest(".vf-measure").id);
         expect(timeSignatures, "4/4 in measure 1, 3/4 in measure 5").to.deep.equal(["osmd-m0-0", "osmd-m4-0"]);
-        expect(osmd.GraphicSheet.findGraphicalMeasure(3, 0)).to.equal(osmd.GraphicSheet.MeasureList[2][0]);
-        expect(osmd.GraphicSheet.findGraphicalMeasure(5, 0)).to.equal(osmd.GraphicSheet.MeasureList[4][0]);
+        const sheet: GraphicalMusicSheet = osmd.GraphicSheet;
+        expect(sheet.findGraphicalMeasure(3, 0) === sheet.MeasureList[2][0], "measure 4: the multiple rest measure of measures 3-4").to.equal(true);
+        expect(sheet.findGraphicalMeasure(5, 0) === sheet.MeasureList[4][0], "measure 6: the multiple rest measure of measures 5-6").to.equal(true);
     });
 
     it("resolves explicit rest members to their representative measure and preserves fallback lookups", async () => {
@@ -69,16 +70,19 @@ describe("Multiple rest measures", () => {
         expect(measures[restStart].filter(Boolean)).to.have.length(staffCount);
         for (let index: number = restStart; index < restStart + restLength; index++) {
             for (let staff: number = 0; staff < staffCount; staff++) {
-                expect(graphic.findGraphicalMeasure(index, staff), `measure ${index + 1}, staff ${staff}`).to.equal(measures[restStart][staff]);
+                expect(graphic.findGraphicalMeasure(index, staff) === measures[restStart][staff], `measure ${index + 1}, staff ${staff}`).to.equal(true);
             }
         }
         for (let staff: number = 0; staff < staffCount; staff++) {
-            expect(graphic.findGraphicalMeasure(restStart - 1, staff)).to.equal(measures[restStart - 1][staff]);
-            expect(graphic.findGraphicalMeasure(restStart + restLength, staff)).to.equal(measures[restStart + restLength][staff]);
-            expect(graphic.findGraphicalMeasure(measures.length, staff)).to.equal(measures[24][staff]);
+            expect(graphic.findGraphicalMeasure(restStart - 1, staff) === measures[restStart - 1][staff],
+                   `the measure before the rest, staff ${staff}`).to.equal(true);
+            expect(graphic.findGraphicalMeasure(restStart + restLength, staff) === measures[restStart + restLength][staff],
+                   `the measure after the rest, staff ${staff}`).to.equal(true);
+            expect(graphic.findGraphicalMeasure(measures.length, staff) === measures[24][staff],
+                   `an index past the end: the last measure, staff ${staff}`).to.equal(true);
         }
-        expect(graphic.findGraphicalMeasure(-1, 0)).to.equal(undefined);
-        expect(graphic.findGraphicalMeasure(22, staffCount)).to.equal(undefined);
+        expect(graphic.findGraphicalMeasure(-1, 0) === undefined, "measure index -1").to.equal(true);
+        expect(graphic.findGraphicalMeasure(22, staffCount) === undefined, "a staff index past the last staff").to.equal(true);
     });
 
     it("draws the measure that a <multiple-rest> begins as wide as the other rest measures " +
@@ -157,6 +161,29 @@ describe("Multiple rest measures", () => {
         // The multiple rest measure was kept, so the flute's notes in measures 2-4 were missing.
         expect(multipleRestMeasureCounts(), "flute shown again").to.deep.equal([0, 0, 0, 0, 0]);
         expect(container.querySelectorAll(".vf-multirest").length, "multiple rest measures drawn").to.equal(0);
+    });
+
+    it("generates multiple rest measures where only a hidden voice plays, with render() alone (Voice.Visible)", async () => {
+        const attributes: string = "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>" +
+            "<clef><sign>G</sign><line>2</line></clef></attributes>";
+        const note: (voice: number) => string = (voice: number): string =>
+            `<note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><voice>${voice}</voice><type>whole</type></note>`;
+        const rest: string = "<note><rest/><duration>4</duration><voice>2</voice></note>";
+        // one staff: voice 1 plays in measures 1-5, voice 2 rests in measures 2-4, e.g. the second of two flutes sharing a staff
+        const measures: string = [note(2), rest, rest, rest, note(2)].map((voice2: string, index: number): string =>
+            `<measure number="${index + 1}">${index === 0 ? attributes : ""}${note(1)}<backup><duration>4</duration></backup>${voice2}</measure>`)
+            .join("");
+        await osmd.load(`<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+            <score-part id="P1"><part-name>Flutes</part-name></score-part></part-list><part id="P1">${measures}</part></score-partwise>`);
+        osmd.render();
+        expect(multipleRestMeasureCounts(), "both voices shown").to.deep.equal([0, 0, 0, 0, 0]);
+        osmd.Sheet.Instruments[0].Voices[0].Visible = false;
+        osmd.render(); // creates the graphic again for the changed voices, without updateGraphic()
+        expect(multipleRestMeasureCounts(), "voice 1 hidden: voice 2's measures 2-4 as a multiple rest measure").to.deep.equal([0, 3, 0, 0, 0]);
+        osmd.EngravingRules.HiddenVoicesKeepLayout = true;
+        osmd.updateGraphic();
+        osmd.render();
+        expect(multipleRestMeasureCounts(), "voice 1 hidden, keeping its layout (HiddenVoicesKeepLayout)").to.deep.equal([0, 0, 0, 0, 0]);
     });
 
     it("draws the clef change after a multiple rest measure at its end, or at the end of its last measure without " +
@@ -268,6 +295,22 @@ describe("Multiple rest measures", () => {
     });
 
     /**
+     * Test_Auto_Multirest_1.musicxml: measures 1-2 and 4-6 are whole-measure rests, and the final barline after measure 6 ends the piece.
+     * With NewPartAndSystemAfterFinalBarline, the multiple rest measure 4-6 ends the part, and no measure is left for a new system.
+     */
+    it("begins no new system after a multiple rest measure that ends the piece with a final barline, also with renderNext()", async () => {
+        osmd.EngravingRules.NewPartAndSystemAfterFinalBarline = true; // (read when loading)
+        const restMeasureCounts: number[] = await renderSample("Test_Auto_Multirest_1.musicxml");
+        expect(restMeasureCounts, "measures per multiple rest measure, for measures 1-6").to.deep.equal([2, 0, 0, 3, 0, 0]);
+        const measuresPerSystem: () => number[] = () => osmd.GraphicSheet.MusicPages[0].MusicSystems.map(system => system.StaffLines[0].Measures.length);
+        expect(measuresPerSystem(), "render(): measures 1-2, 3 and 4-6 in one system, and no empty system after it").to.deep.equal([3]);
+
+        await osmd.load(TestUtils.getScore("Test_Auto_Multirest_1.musicxml"));
+        expect(osmd.renderNext({ measures: osmd.Sheet.SourceMeasures.length }).done, "renderNext(): done in one batch").to.equal(true);
+        expect(measuresPerSystem(), "renderNext(): measures 1-2, 3 and 4-6 in one system").to.deep.equal([3]);
+    });
+
+    /**
      * test_multiple_rest_measures_auto_xml_breaks.musicxml: measures 2-7 are whole-measure rests, measure 4 begins a new system in the XML,
      * measure 6 a new page. The layout can't break within a multiple rest measure, so with newSystemFromXML and newPageFromXML,
      * measures 2-3, 4-5 and 6-7 become multiple rest measures. Without these options, measures 2-7 become one.
@@ -322,5 +365,87 @@ describe("Multiple rest measures", () => {
         // the measure groups of the notes drawn with modifiers: the rests with the fermatas
         const fermataMeasures: string[] = Array.from(container.querySelectorAll(".vf-modifiers")).map(modifiers => modifiers.closest(".vf-measure").id);
         expect(fermataMeasures, "the fermatas of measures 2 and 5").to.deep.equal(["osmd-m1-0", "osmd-m4-0"]);
+    });
+
+    /** The ids of the measure groups drawn (osmd-m<measure index>-<staff index>), a multiple rest measure has its first measure's. */
+    function drawnMeasureGroups(): string[] {
+        return Array.from(container.querySelectorAll(".vf-measure")).map(measure => measure.id);
+    }
+
+    /**
+     * Measures 2-7 of a flute part are whole-measure rests, given as a multiple rest measure in the MusicXML (`<multiple-rest>`) or not
+     * (generated). Its measures inside the multiple rest measure have no graphical measures, so nothing was drawn when the draw range
+     * began inside it, and a draw range ending inside it drew all its measures.
+     */
+    it("draws a multiple rest measure with the measures of the draw range only, also when the range begins inside it", async () => {
+        const note: string = "<note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>";
+        const rest: string = "<note><rest measure=\"yes\"/><duration>4</duration></note>";
+        const attributes: string = "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>" +
+            "<clef><sign>G</sign><line>2</line></clef></attributes>";
+        const multipleRest: string = "<attributes><measure-style><multiple-rest>6</multiple-rest></measure-style></attributes>";
+        for (const restsInXml of ["<multiple-rest>", "generated"]) {
+            const contents: string[] = [attributes + note, (restsInXml === "generated" ? "" : multipleRest) + rest, rest, rest, rest, rest, rest, note];
+            osmd.setOptions({ drawFromMeasureNumber: 4, drawUpToMeasureNumber: 8 });
+            await osmd.load(`<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+                <score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1">` +
+                contents.map((content, index) => `<measure number="${index + 1}">${content}</measure>`).join("") + "</part></score-partwise>");
+            osmd.render();
+            expect(drawnMeasureGroups(), `${restsInXml}, measures 4-8: measures 4-7 as a multiple rest measure`).to.deep.equal(["osmd-m3-0", "osmd-m7-0"]);
+            expect(multipleRestMeasureCounts(), `${restsInXml}, measures 4-8`).to.deep.equal([0, 2, 0, 4, 0, 0, 0, 0]);
+            osmd.renderNext({ measures: 8 });
+            expect(osmd.IncrementalRenderingComplete, `${restsInXml}, measures 4-8, renderNext()`).to.equal(true);
+            expect(drawnMeasureGroups(), `${restsInXml}, measures 4-8, renderNext()`).to.deep.equal(["osmd-m3-0", "osmd-m7-0"]);
+
+            // the multiple rest measures are made again for another draw range (render() creates the graphic again)
+            osmd.setOptions({ drawFromMeasureNumber: 1, drawUpToMeasureNumber: 5 });
+            osmd.render();
+            expect(drawnMeasureGroups(), `${restsInXml}, measures 1-5: measures 2-5 as a multiple rest measure`).to.deep.equal(["osmd-m0-0", "osmd-m1-0"]);
+            expect(multipleRestMeasureCounts(), `${restsInXml}, measures 1-5`).to.deep.equal([0, 4, 0, 0, 0, 2, 0, 0]);
+            osmd.setOptions({ drawUpToMeasureNumber: 8 });
+            osmd.render();
+            expect(drawnMeasureGroups(), `${restsInXml}, measures 1-8`).to.deep.equal(["osmd-m0-0", "osmd-m1-0", "osmd-m7-0"]);
+            expect(multipleRestMeasureCounts(), `${restsInXml}, measures 1-8`).to.deep.equal([0, 6, 0, 0, 0, 0, 0, 0]);
+            // a draw range that doesn't divide a multiple rest measure keeps the graphic
+            const graphic: GraphicalMusicSheet = osmd.GraphicSheet;
+            osmd.setOptions({ drawFromMeasureNumber: 8 });
+            osmd.render();
+            expect(drawnMeasureGroups(), `${restsInXml}, measure 8`).to.deep.equal(["osmd-m7-0"]);
+            expect(osmd.GraphicSheet === graphic, `${restsInXml}, measure 8: the same graphic`).to.equal(true);
+        }
+    });
+
+    /**
+     * After a pickup measure (measure number 0), measure number n has the index n: measures 2-5 of a flute part are a multiple rest measure
+     * (`<multiple-rest>`), and the draw range begins with measure 3.
+     */
+    it("divides a multiple rest measure where the draw range begins after a pickup measure", async () => {
+        const note: string = "<note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>";
+        const pickup: string = "<note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><type>quarter</type></note>";
+        const rest: string = "<note><rest measure=\"yes\"/><duration>4</duration></note>";
+        const attributes: string = "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>" +
+            "<clef><sign>G</sign><line>2</line></clef></attributes>";
+        const multipleRest: string = "<attributes><measure-style><multiple-rest>4</multiple-rest></measure-style></attributes>";
+        const contents: string[] = [attributes + pickup, note, multipleRest + rest, rest, rest, rest, note]; // measures 0-6
+        osmd.setOptions({ drawFromMeasureNumber: 3 });
+        await osmd.load(`<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+            <score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1">` +
+            contents.map((content, index) => `<measure number="${index}"${index === 0 ? " implicit=\"yes\"" : ""}>${content}</measure>`).join("") +
+            "</part></score-partwise>");
+        osmd.render();
+        expect(osmd.Sheet.SourceMeasures[0].ImplicitMeasure, "the pickup measure").to.equal(true);
+        expect(drawnMeasureGroups(), "measures 3-5 as a multiple rest measure, and measure 6").to.deep.equal(["osmd-m3-0", "osmd-m6-0"]);
+        expect(multipleRestMeasureCounts(), "measures 0-6").to.deep.equal([0, 0, 0, 3, 0, 0, 0]);
+
+        // Then the measures 1-6 without the pickup measure: measure 3 has the index 2 again (render() had left the index for the pickup
+        //   measure in the rules, so the multiple rest measure was divided at measure 4). load() divides it where render() draws from.
+        await osmd.load(`<?xml version="1.0"?><score-partwise version="4.0"><part-list>
+            <score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1">` +
+            contents.slice(1).map((content, index) => `<measure number="${index + 1}">${index === 0 ? attributes : ""}${content}</measure>`)
+                .join("") + "</part></score-partwise>");
+        const graphicOfLoad: GraphicalMusicSheet = osmd.GraphicSheet;
+        osmd.render();
+        expect(drawnMeasureGroups(), "without the pickup measure").to.deep.equal(["osmd-m2-0", "osmd-m5-0"]);
+        expect(multipleRestMeasureCounts(), "measures 1-6").to.deep.equal([0, 0, 3, 0, 0, 0]);
+        expect(osmd.GraphicSheet === graphicOfLoad, "the graphic of load()").to.equal(true);
     });
 });

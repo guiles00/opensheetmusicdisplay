@@ -6,3 +6,4 @@ export * from "./OSMDOptions";
 export * from "./OpenSheetMusicDisplay";
 export * from "./RangeSelection";
 export * from "./SystemVirtualizationController";
+export * from "./WarmKeeperScore";

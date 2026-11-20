@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 /* eslint-disable @typescript-eslint/no-unused-expressions */
 import { IXmlElement } from "../../../src/Common/FileIO/Xml";
 import { TestUtils } from "../../Util/TestUtils";
@@ -8,23 +8,14 @@ import JSZip from "jszip";
 describe("MXL Tests", () => {
   // Generates a test for a mxl file name
   function testFile(scoreName: string): void {
-    it(`reads ${scoreName}`, (done: Mocha.Done) => {
+    it(`reads ${scoreName}`, async () => {
       // Load the xml file content
       const mxl: string = TestUtils.getMXL(scoreName);
       expect(mxl).to.not.be.undefined;
       // Extract XML from MXL
-      // Warning: the sheet is loaded asynchronously,
-      // (with Promises), thus we need a little fix
-      // in the end with 'then(null, done)' to
-      // make Mocha work asynchronously
-      MXLHelper.MXLtoIXmlElement(mxl).then(
-        (score: IXmlElement) => {
-          expect(score).to.not.be.undefined;
-          expect(score.name).to.equal("score-partwise");
-          done();
-        },
-        (exc: any) => { throw exc; }
-      ).then(undefined, done);
+      const score: IXmlElement = await MXLHelper.MXLtoIXmlElement(mxl);
+      expect(score).to.not.be.undefined;
+      expect(score.name).to.equal("score-partwise");
     });
   }
 
@@ -50,15 +41,45 @@ describe("MXL Tests", () => {
     expect(xmlString).to.equal(xml);
   });
 
+  describe("a zip file without a usable META-INF/container.xml", () => {
+    const xml: string = "<score-partwise version=\"4.0\"/>";
+    const container: (rootFile: string) => string = (rootFile: string): string =>
+      `<container><rootfiles><rootfile full-path="${rootFile}"/></rootfiles></container>`;
+    async function read(files: {[name: string]: string}): Promise<string> {
+      const zip: JSZip = new JSZip();
+      for (const name of Object.keys(files)) {
+        zip.file(name, files[name]);
+      }
+      return MXLHelper.jszipToXMLstring(zip).catch((error: Error): string => "rejected: " + error.message);
+    }
+
+    it("reads the first .musicxml file instead, or else the first .xml file, with a warning", async () => {
+      const logged: string[] = TestUtils.catchLogs();
+      expect(await read({"notes.xml": "<notes/>", "score.musicxml": xml}), "no container file").to.equal(xml);
+      expect(await read({"META-INF/container.xml": "", "score.xml": xml}), "empty container file").to.equal(xml);
+      expect(await read({"META-INF/container.xml": container("Score.xml"), "score.xml": xml}), "rootfile not in the zip").to.equal(xml);
+      expect(logged).to.deep.equal([
+        "[OSMD] MXL file: META-INF/container.xml is missing, reading \"score.musicxml\" instead.",
+        "[OSMD] MXL file: META-INF/container.xml names no rootfile, reading \"score.xml\" instead.",
+        "[OSMD] MXL file: the rootfile \"Score.xml\" of META-INF/container.xml is not in the archive, reading \"score.xml\" instead.",
+      ]);
+    });
+
+    it("rejects with what is missing if the zip has no other MusicXML file", async () => {
+      const noOtherFile: string = ", and the archive has no other .musicxml or .xml file";
+      expect(await read({"notes.txt": "x"})).to.equal("rejected: META-INF/container.xml is missing" + noOtherFile);
+      expect(await read({"META-INF/container.xml": "<container/>", "notes.txt": "x"}))
+        .to.equal("rejected: META-INF/container.xml names no rootfile" + noOtherFile);
+      expect(await read({"META-INF/container.xml": container("score.xml")}))
+        .to.equal("rejected: the rootfile \"score.xml\" of META-INF/container.xml is not in the archive" + noOtherFile);
+    });
+  });
+
   // Test failure
-  it("Corrupted file", (done: Mocha.Done) => {
-    MXLHelper.MXLtoIXmlElement("").then(
-      (score: IXmlElement) => {
-        expect(score).to.not.be.undefined;
-        expect(score.name).to.equal("score-partwise");
-        done(new Error("Empty zip file was loaded correctly. How is that even possible?"));
-      },
-      (exc: any) => { done(); }
-    );
+  it("Corrupted file", async () => {
+    const logged: string[] = TestUtils.catchLogs();
+    await expect(MXLHelper.MXLtoIXmlElement(""), "an empty zip file").rejects.toThrow();
+    expect(logged.length, "errors logged").to.be.greaterThan(0);
+    expect(logged.filter((message: string) => !message.includes("Corrupted zip")), "other messages").to.deep.equal([]);
   });
 });

@@ -1,4 +1,4 @@
-import {expect} from "chai";
+import {expect} from "vitest";
 import {TestUtils} from "../../../Util/TestUtils";
 import {OpenSheetMusicDisplay} from "../../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import {MusicPartManagerIterator} from "../../../../src/MusicalScore/MusicParts/MusicPartManagerIterator";
@@ -28,6 +28,18 @@ describe("Tempo direction timing", (): void => {
           <direction-type><metronome ${attributes}><beat-unit>quarter</beat-unit><per-minute>${bpm}</per-minute></metronome></direction-type>
           ${offset}<sound tempo="${bpm}">${soundOffset}</sound>
         </direction>`;
+    }
+
+    /** A metronome mark beatUnit = perMinute, dotted if given, with a <sound tempo> if soundTempo is given. */
+    function metronome(beatUnit: string, perMinute: number, dotted: boolean = false, soundTempo?: number): string {
+        return `<direction placement="above"><direction-type><metronome><beat-unit>${beatUnit}</beat-unit>
+          ${dotted ? "<beat-unit-dot/>" : ""}<per-minute>${perMinute}</per-minute></metronome></direction-type>
+          ${soundTempo ? `<sound tempo="${soundTempo}"/>` : ""}</direction>`;
+    }
+
+    /** A direction with words and no <sound tempo>. */
+    function wordsDirection(text: string): string {
+        return `<direction><direction-type><words>${text}</words></direction-type></direction>`;
     }
 
     function score(content: string): Document {
@@ -90,6 +102,23 @@ describe("Tempo direction timing", (): void => {
         expect(bpms()).to.deep.equal([60, 60, 120, 120]);
     });
 
+    it("applies a sound tempo without a printed tempo at its position, without drawing or raising a tempo mark", async (): Promise<void> => {
+        /** The gap between the first tempo mark and the staff below it, after rendering the measure with or without the sound 90. */
+        async function gapBelowFirstMark(sound: string): Promise<number> {
+            // a sound tempo of 0 is ignored
+            await osmd.load(score(`<direction><direction-type><dynamics><p/></dynamics></direction-type><sound tempo="120"/></direction>
+              ${note("C")}${metronome("quarter", 60)}${sound}${note("D")}
+              ${note("E")}${metronome("quarter", 60)}<sound tempo="0"/>${note("F")}`));
+            osmd.render();
+            return div.querySelector(".vf-stave").getBoundingClientRect().top - div.querySelector(".vf-stavetempo").getBoundingClientRect().bottom;
+        }
+        const gap: number = await gapBelowFirstMark('<sound tempo="90"/>');
+        expect(bpms()).to.deep.equal([120, 90, 90, 60]);
+        expect(osmd.Sheet.getExpressionsStartTempoInBPM()).to.equal(120);
+        expect(div.querySelectorAll(".vf-stavetempo").length, "no generated mark at the start").to.equal(2);
+        expect(gap, "the sound does not raise the mark at its time").to.be.closeTo(await gapBelowFirstMark(""), 0.01);
+    });
+
     it("activates a sound change between notes and restores tempo on reverse traversal", async (): Promise<void> => {
         await osmd.load(score(tempo(60) + note("C") + note("D") +
             tempo(120, "<offset>-0.5</offset>", "<offset>-0.5</offset>") + note("E") + note("F")));
@@ -126,14 +155,16 @@ describe("Tempo direction timing", (): void => {
 
     it("uses the sound BPM over printed BPM and tempo text", async (): Promise<void> => {
         const direction: string = `<direction><direction-type><metronome><beat-unit>half</beat-unit>
-          <per-minute>60</per-minute></metronome></direction-type><sound tempo="120"/></direction>`;
+          <per-minute>60</per-minute></metronome></direction-type><sound tempo="142.5"/></direction>`;
         const words: string = "<direction><direction-type><words>Allegro</words></direction-type></direction>";
         await osmd.load(score(direction + words + note("C") + note("D") + note("E") + note("F")));
         expect(osmd.Sheet.SourceMeasures[0].TempoExpressions[0].InstantaneousTempo.TempoInBpm).to.equal(60);
-        expect(bpms()).to.deep.equal([120, 120, 120, 120]);
-        expect(osmd.Sheet.getExpressionsStartTempoInBPM()).to.equal(120);
+        expect(osmd.Sheet.SourceMeasures[0].TempoInBPM).to.equal(142.5);
+        expect(bpms()).to.deep.equal([142.5, 142.5, 142.5, 142.5]);
+        expect(osmd.Sheet.DefaultStartTempoInBpm).to.equal(142.5);
+        expect(osmd.Sheet.getExpressionsStartTempoInBPM()).to.equal(142.5);
 
-        const markWithoutSound: string = direction.replace('<sound tempo="120"/>', "");
+        const markWithoutSound: string = direction.replace('<sound tempo="142.5"/>', "");
         const wordsWithSound: string = words.replace("</direction>", '<sound tempo="120"/></direction>');
         await osmd.load(score(markWithoutSound + wordsWithSound + note("C") + note("D") + note("E") + note("F")));
         expect(bpms()).to.deep.equal([120, 120, 120, 120]);
@@ -196,5 +227,77 @@ describe("Tempo direction timing", (): void => {
             words + note("E") + modulation + note("F")));
         // Simultaneous Allegro must not replace sound 120; a later Allegro without sound can set its own tempo.
         expect(bpms()).to.deep.equal([120, 180, 130, 195]);
+    });
+
+    it("sets a measure's TempoInBPM in quarter notes per minute: the sound tempo, else the metronome mark by its beat unit", async (): Promise<void> => {
+        // [beat unit, dotted, per-minute, sound tempo, TempoInBPM]: a <sound tempo> wins over the mark it comes with
+        const marks: [string, boolean, number, number, number][] = [
+            ["half", false, 88, undefined, 176], ["half", false, 88, 176, 176], ["quarter", true, 60, undefined, 90],
+            ["eighth", false, 120, undefined, 60], ["quarter", false, 60, 72, 72]];
+        for (const [beatUnit, dotted, perMinute, soundTempo, tempoInBpm] of marks) {
+            await osmd.load(score(metronome(beatUnit, perMinute, dotted, soundTempo) + note("C") + note("D") + note("E") + note("F")));
+            expect(osmd.Sheet.SourceMeasures[0].TempoInBPM, `${beatUnit}${dotted ? " dotted" : ""} = ${perMinute}, sound tempo ${soundTempo}`)
+                .to.equal(tempoInBpm);
+        }
+    });
+
+    it("gives the tempo of a metronome mark without a sound tempo in quarter notes per minute, also as the start tempo", async (): Promise<void> => {
+        const modulation: string = `<direction><direction-type><metronome><beat-unit>quarter</beat-unit>
+          <beat-unit>quarter</beat-unit><beat-unit-dot/></metronome></direction-type></direction>`;
+        await osmd.load(score(metronome("half", 30) + note("C") + metronome("quarter", 60, true) + note("D") +
+            metronome("eighth", 120) + note("E") + modulation + note("F")));
+        // half = 30 is 60 quarter notes per minute, dotted quarter = 60 is 90, eighth = 120 is 60, and quarter = dotted quarter
+        //   after it 60 * 1.5 = 90 (before: 30, 60, 120 and 180)
+        expect(bpms()).to.deep.equal([60, 90, 60, 90]);
+        expect(osmd.Sheet.TimestampSortedTempoExpressionsList.map(expression => expression.InstantaneousTempo.TempoInBpm),
+               "the marks' own numbers, which are drawn, and the note equation's tempo").to.deep.equal([30, 60, 120, 90]);
+        expect(osmd.Sheet.DefaultStartTempoInBpm).to.equal(60);
+        expect(osmd.Sheet.userStartTempoInBPM).to.equal(60);
+        expect(osmd.Sheet.getExpressionsStartTempoInBPM()).to.equal(60);
+
+        // a continuous tempo starts at the tempo before it (without interpolation, the default, the iterator stays at it)
+        await osmd.load(score(metronome("half", 30) + note("C") +
+            "<direction><direction-type><words>stretto</words></direction-type></direction>" + note("D") + note("E") + note("F")));
+        expect(osmd.Sheet.TimestampSortedTempoExpressionsList[1].ContinuousTempo.StartTempo).to.equal(60);
+        expect(bpms()).to.deep.equal([60, 60, 60, 60]);
+    });
+
+    it("returns to the tempo before the latest temporary change at a tempo, and to the first tempo at Tempo I", async (): Promise<void> => {
+        // piu lento and poco lento get Lento's 48 BPM
+        await osmd.load(score(tempo(120) + note("C") + wordsDirection("piu lento") + note("D") +
+            wordsDirection("a tempo") + note("E") + note("F")));
+        expect(bpms()).to.deep.equal([120, 48, 120, 120]);
+        // in quarter notes per minute: half = 30 without a sound tempo is 60
+        await osmd.load(score(metronome("half", 30) + note("C") + wordsDirection("piu lento") + note("D") +
+            wordsDirection("a tempo") + note("E") + note("F")));
+        expect(bpms()).to.deep.equal([60, 48, 60, 60]);
+        await osmd.load(score(tempo(120) + note("C") + tempo(90) + note("D") + wordsDirection("poco lento") + note("E") +
+            wordsDirection("a tempo") + note("F")));
+        expect(bpms()).to.deep.equal([120, 90, 48, 90]);
+        await osmd.load(score(tempo(120) + note("C") + tempo(90) + note("D") + wordsDirection("Tempo I") + note("E") + note("F")));
+        expect(bpms()).to.deep.equal([120, 90, 120, 120]);
+        // a temporary change with a metronome mark at the same time
+        await osmd.load(score(tempo(120) + note("C") + tempo(144) + wordsDirection("piu mosso") + note("D") +
+            wordsDirection("a tempo") + note("E") + note("F")));
+        expect(bpms()).to.deep.equal([120, 144, 120, 120]);
+        // the first tempo of the piece, although poco makes it look like a temporary change
+        await osmd.load(score(note("C") + wordsDirection("Poco allegretto") + note("D") + note("E") +
+            wordsDirection("a tempo") + note("F")));
+        expect(bpms()).to.deep.equal([100, 112, 112, 112]);
+    });
+
+    it("keeps the tempo at poco rit. and molto accel., which have no BPM of their own", async (): Promise<void> => {
+        await osmd.load(score(tempo(120) + note("C") + wordsDirection("poco rit.") + note("D") + wordsDirection("a tempo") +
+            note("E") + wordsDirection("molto accel.") + note("F")));
+        expect(bpms()).to.deep.equal([120, 120, 120, 120]);
+    });
+
+    it("validates decimal sound syntax", async (): Promise<void> => {
+        const values: [string, number][] = [[" &#x9;&#xD;+120.&#xA; ", 120], [".5", 0.5],
+            ["-1", 100], ["\u00a0120\u00a0", 100]];
+        await osmd.load(score(values.map(([value]): string =>
+            `<direction><direction-type><words>Andante</words></direction-type><sound tempo="${value}"/></direction>` + note("C")
+        ).join("")));
+        expect(bpms()).to.deep.equal(values.map(([, expected]): number => expected));
     });
 });

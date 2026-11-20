@@ -55,10 +55,18 @@ export class TemposCalculator implements IAfterSheetReadingModule {
         const primoTempo: number = TemposCalculator.cleanExpListStartingEntry(musicSheet, AllExp);
         const ExpressionsList: MultiTempoExpression[] = [];
         let previousMte: MultiTempoExpression = null;
+        // the tempo in force, in quarter notes per minute (a metronome mark's TempoInBpm counts its beat unit)
         let previousTempo: number = primoTempo;
+        // The tempo that "a tempo" returns to: the one before the latest temporary change, e.g. before a rit. or piu lento.
+        let aTempo: number = primoTempo;
+        let tempoBeforeTimestamp: number = primoTempo;
         let soundTempoTimestamp: Fraction;
         for (let mteIndex: number = 0, mteSource: MultiTempoExpression[] = AllExp; mteIndex < mteSource.length; mteIndex++) {
             const mte: MultiTempoExpression = mteSource[mteIndex];
+            const isAtStart: boolean = mte.AbsolutePlaybackTimestamp.Equals(mteSource[0].AbsolutePlaybackTimestamp);
+            if (mteIndex > 0 && !mte.AbsolutePlaybackTimestamp.Equals(mteSource[mteIndex - 1].AbsolutePlaybackTimestamp)) {
+                tempoBeforeTimestamp = previousTempo;
+            }
             if (previousMte === null || mte.AbsoluteTimestamp !== previousMte.AbsoluteTimestamp) {
                 // Here we make sure that all Inst tempos have a non-zero BPM.
                 if (mte.InstantaneousTempo != null && mte.InstantaneousTempo.TempoInBpm === 0.0) {
@@ -69,16 +77,18 @@ export class TemposCalculator implements IAfterSheetReadingModule {
                     if (ite.isMetronomeMark) {
                         const factor: Fraction = ite.getNoteEquationTempoFactor();
                         ite.TempoInBpm = previousTempo * factor.GetExpandedNumerator() / factor.Denominator;
-                    } else if (ite instanceof InstantaneousTempoExpression && ite.TempoType !== TempoType.change) {
+                    } else if (ite.TempoType === TempoType.inst) {
                         // An inst tempo should normally have a non-zero BPM.
                         ite.TempoInBpm = InstantaneousTempoExpression.getDefaultValueForInstTempo(ite.InstTempo);
                     }
+                    // A change word (e.g. rit.) and a word with only add-ons (e.g. poco rit., molto accel.) have no tempo of their own:
+                    //   0 BPM keeps the tempo in force (MusicPartManagerIterator.updateCurrentBpm()). A return to a tempo gets that tempo.
                     // A change tempo will have a 0 BPM unless it was set by #calculatePrimoTempo, because it was on the first measure.
                     if (ite.TempoType === TempoType.change) {
                         switch (ite.ChangeSubType) {
                             case ChangeSubType.atempo:
                                 {
-                                    ite.TempoInBpm = previousTempo;
+                                    ite.TempoInBpm = aTempo;
                                     break;
                                 }
                             case ChangeSubType.doppioMovimento:
@@ -103,7 +113,15 @@ export class TemposCalculator implements IAfterSheetReadingModule {
                     previousTempo = mte.PlaybackTempoInBpm;
                     soundTempoTimestamp = mte.AbsolutePlaybackTimestamp;
                 } else if (mte.InstantaneousTempo?.TempoInBpm > 0 && !mte.AbsolutePlaybackTimestamp.Equals(soundTempoTimestamp)) {
-                    previousTempo = mte.InstantaneousTempo.TempoInBpm;
+                    previousTempo = mte.InstantaneousTempo.TempoInQuarterNotesPerMinute;
+                }
+                // "a tempo" returns to the tempo before the latest temporary change: before its timestamp, so also before
+                //   a metronome mark given with it (e.g. piu mosso with a BPM). At the start, a temporary-looking word gives
+                //   the tempo of the piece (e.g. Poco allegretto). "a tempo" itself keeps the tempo to return to.
+                if (TemposCalculator.isTemporaryChange(mte) && !isAtStart) {
+                    aTempo = tempoBeforeTimestamp;
+                } else if (mte.InstantaneousTempo?.ChangeSubType !== ChangeSubType.atempo) {
+                    aTempo = previousTempo;
                 }
             }
             /** Here we process two mte entries with the same TimeStamp.
@@ -149,7 +167,7 @@ export class TemposCalculator implements IAfterSheetReadingModule {
                 previousTempo = mte.PlaybackTempoInBpm;
                 soundTempoTimestamp = mte.AbsolutePlaybackTimestamp;
             } else if (mte.InstantaneousTempo != null && !mte.AbsolutePlaybackTimestamp.Equals(soundTempoTimestamp)) {
-                previousTempo = mte.InstantaneousTempo.TempoInBpm;
+                previousTempo = mte.InstantaneousTempo.TempoInQuarterNotesPerMinute;
             }
             if (mte.ContinuousTempo != null) {
                 const cte: ContinuousTempoExpression = mte.ContinuousTempo;
@@ -199,11 +217,21 @@ export class TemposCalculator implements IAfterSheetReadingModule {
             }
         }
         musicSheet.TimestampSortedTempoExpressionsList = ExpressionsList;
-        if (ExpressionsList[0]?.InstantaneousTempo && ExpressionsList[0].AbsolutePlaybackTimestamp.RealValue === 0) {
+        if (ExpressionsList[0]?.AbsolutePlaybackTimestamp.RealValue === 0 &&
+            (ExpressionsList[0].InstantaneousTempo || ExpressionsList[0].PlaybackTempoInBpm > 0)) {
             musicSheet.DefaultStartTempoInBpm = primoTempo;
         }
     }
-    /** Clean the start of the  expressions list and return the TempoPrimo BPM.
+    /** Whether the expression changes the tempo in force for a while, so that "a tempo" returns to the tempo before it:
+     *  a continuous tempo (e.g. poco riten.) or a relative instantaneous one (e.g. rit., poco rit., piu lento).
+     */
+    private static isTemporaryChange(mte: MultiTempoExpression): boolean {
+        if (mte.InstantaneousTempo) {
+            return mte.InstantaneousTempo.isTemporaryChange();
+        }
+        return mte.ContinuousTempo !== undefined;
+    }
+    /** Clean the start of the  expressions list and return the TempoPrimo BPM (in quarter notes per minute).
      *
      * Use the initial setting until the first playback instruction, or resolve an instruction at time zero.
      * Return that BPM for TempoPrimo; a later instruction must not become the starting tempo.
@@ -213,17 +241,21 @@ export class TemposCalculator implements IAfterSheetReadingModule {
         if (ExpList.length === 0 || ExpList[0].AbsolutePlaybackTimestamp.RealValue !== 0) {
             return ms.DefaultStartTempoInBpm || ms.userStartTempoInBPM;
         }
-        if (!ExpList[0].InstantaneousTempo) {
-            const I: InstantaneousTempoExpression = new InstantaneousTempoExpression("*generated", PlacementEnum.Above, 1, 0, ExpList[0], true);
-            ExpList[0].addExpression(I, "");
-        }
-        const Inst0: InstantaneousTempoExpression = ExpList[0].InstantaneousTempo;
         let soundTempo: number = ExpList[0].PlaybackTempoInBpm;
         for (let i: number = 1; i < ExpList.length && ExpList[i].AbsolutePlaybackTimestamp.RealValue === 0; i++) {
             if (ExpList[i].PlaybackTempoInBpm > 0) {
                 soundTempo = ExpList[i].PlaybackTempoInBpm;
             }
         }
+        if (ExpList[0].EntriesList.length === 0) {
+            // a sound tempo without a printed tempo: use it without generating a tempo mark
+            return soundTempo;
+        }
+        if (!ExpList[0].InstantaneousTempo) {
+            const I: InstantaneousTempoExpression = new InstantaneousTempoExpression("*generated", PlacementEnum.Above, 1, 0, ExpList[0], true);
+            ExpList[0].addExpression(I, "");
+        }
+        const Inst0: InstantaneousTempoExpression = ExpList[0].InstantaneousTempo;
         if (!(Inst0.TempoInBpm > 0)) {
             // Missing BPM can be 0, or undefined for a generated expression or an unknown tempo word.
             if (soundTempo > 0) {
@@ -234,7 +266,7 @@ export class TemposCalculator implements IAfterSheetReadingModule {
                 Inst0.TempoInBpm = InstantaneousTempoExpression.getDefaultValueForInstTempo(InstTempo.moderato);
             }
         }
-        return soundTempo > 0 ? soundTempo : Inst0.TempoInBpm;
+        return soundTempo > 0 ? soundTempo : Inst0.TempoInQuarterNotesPerMinute;
     }
 }
 export class TempoSorter {

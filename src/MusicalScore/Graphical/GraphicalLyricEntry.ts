@@ -243,7 +243,7 @@ export class GraphicalLyricEntry {
      */
     public getVoiceEntry(): VoiceEntry {
         return this.lyricsEntry.Parent;
-    }
+}
 
     /**
      * Gets all notes in the chord associated with this lyric.

@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { TestUtils } from "../../Util/TestUtils";
 import { OpenSheetMusicDisplay } from "../../../src/OpenSheetMusicDisplay/OpenSheetMusicDisplay";
 import { Cursor } from "../../../src/OpenSheetMusicDisplay/Cursor";
@@ -49,7 +49,7 @@ describe("Cursor CSS element", () => {
 
     it("keeps a div cursor that consumers can style with CSS", async () => {
         pageStyle = document.createElement("style");
-        pageStyle.textContent = "[id^='cursorImg-'] { background: rgb(255, 0, 0); opacity: 0.7; }";
+        pageStyle.textContent = ".osmd-cursor { background: rgb(255, 0, 0); opacity: 0.7; }";
         document.head.appendChild(pageStyle);
         const cursor: Cursor = await showCursor();
         expect(cursor.cursorElement.tagName).to.equal("DIV");

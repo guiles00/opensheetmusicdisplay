@@ -6,7 +6,7 @@ import {IXmlElement} from "../../Common/FileIO/Xml";
 import {Instrument} from "../Instrument";
 import {ITextTranslation} from "../Interfaces/ITextTranslation";
 import {MusicSheetReadingException} from "../Exceptions";
-import log from "loglevel";
+import { log } from "../../Common/Logging";
 import {IXmlAttribute} from "../../Common/FileIO/Xml";
 import {RhythmInstruction} from "../VoiceData/Instructions/RhythmInstruction";
 import {RhythmSymbolEnum} from "../VoiceData/Instructions/RhythmInstruction";
@@ -15,7 +15,7 @@ import {Staff} from "../VoiceData/Staff";
 import {VoiceEntry} from "../VoiceData/VoiceEntry";
 import {LyricsEntry} from "../VoiceData/Lyrics/LyricsEntry";
 import {LyricWord} from "../VoiceData/Lyrics/LyricsWord";
-import {InstrumentalGroup} from "../InstrumentalGroup";
+import {GroupSymbol, InstrumentalGroup} from "../InstrumentalGroup";
 import {SubInstrument} from "../SubInstrument";
 import {MidiInstrument} from "../VoiceData/Instructions/ClefInstruction";
 import {AbstractNotationInstruction} from "../VoiceData/Instructions/AbstractNotationInstruction";
@@ -27,6 +27,7 @@ import {RepetitionCalculator} from "./MusicSymbolModules/RepetitionCalculator";
 import {EngravingRules} from "../Graphical/EngravingRules";
 import { ReaderPluginManager } from "./ReaderPluginManager";
 import { TextAlignmentEnum } from "../../Common/Enums/TextAlignment";
+import { musicXmlColorsAreAlphaLast } from "../../Common/DataObjects/XmlColor";
 
 export class MusicSheetReader /*implements IMusicSheetReader*/ {
 
@@ -45,6 +46,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
     private repetitionCalculator: RepetitionCalculator;
     private afterSheetReadingModules: IAfterSheetReadingModule[];
     private musicSheet: MusicSheet;
+    private readingError: Error;
     private completeNumberOfStaves: number = 0;
     private currentMeasure: SourceMeasure;
     private previousMeasure: SourceMeasure;
@@ -60,6 +62,19 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         return this.completeNumberOfStaves;
     }
 
+    /** All <identification><encoding><software> values (a file can name several programs, e.g. Finale and Dolet). */
+    private static readEncodingSoftware(root: IXmlElement): string[] {
+        const software: string[] = [];
+        for (const identification of root.elements("identification")) {
+            for (const encoding of identification.elements("encoding")) {
+                for (const node of encoding.elements("software")) {
+                    software.push(node.value);
+                }
+            }
+        }
+        return software;
+    }
+
     public static doCalculationsAfterDurationHasBeenSet(instrumentReaders: InstrumentReader[]): void {
         for (const instrumentReader of instrumentReaders) {
             instrumentReader.doCalculationsAfterDurationHasBeenSet();
@@ -70,15 +85,22 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
      * Read a music XML file and saves the values in the MusicSheet class.
      * @param root
      * @param path
-     * @returns {MusicSheet}
+     * @returns {MusicSheet} the sheet, or undefined if reading failed: the error is logged and kept in ReadingError.
      */
     public createMusicSheet(root: IXmlElement, path: string): MusicSheet {
+        this.readingError = undefined;
         try {
             return this._createMusicSheet(root, path);
         } catch (e) {
             log.error("MusicSheetReader.CreateMusicSheet", e);
+            this.readingError = e instanceof Error ? e : new Error(String(e));
             return undefined;
         }
+    }
+
+    /** The error that made the last createMusicSheet() return undefined. Undefined if it returned a sheet. */
+    public get ReadingError(): Error {
+        return this.readingError;
     }
 
     private _removeFromArray(list: any[], elem: any): void {
@@ -169,6 +191,8 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         // Guitar Pro 5 writes the dynamic of every note (its velocity) as <dynamics> in the note's <notations>:
         //   drawn, they would repeat at almost every note (Guitar Pro 7 writes them only where a dynamic is set)
         const readNotationDynamics: boolean = encoding?.value !== "Guitar Pro 5";
+        // MuseScore writes 8-digit colors as #RRGGBBAA instead of MusicXML's #AARRGGBB, see musicXmlColorsAreAlphaLast()
+        this.musicSheet.XmlColorAlphaLast = musicXmlColorsAreAlphaLast(MusicSheetReader.readEncodingSoftware(root));
 
         while (couldReadMeasure) {
             // TODO changing this.rules.PartAndSystemAfterFinalBarline requires a reload of the piece for measure numbers to be updated
@@ -223,7 +247,8 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
 
         //this.musicSheet.DefaultStartTempoInBpm = this.musicSheet.SourceMeasures[0].TempoInBPM;
         this.musicSheet.userStartTempoInBPM = this.musicSheet.userStartTempoInBPM || this.musicSheet.DefaultStartTempoInBpm;
-
+        // the mapping between enrolled and sheet timestamps (absoluteEnrolledToSheetTimestamp()) and the selection
+        this.musicSheet.MusicPartManager.init();
         return this.musicSheet;
     }
 
@@ -358,6 +383,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
 
     private initializeReading(partList: IXmlElement[], partInst: IXmlElement[], instrumentReaders: InstrumentReader[]): void {
         const instrumentDict: { [_: string]: Instrument } = this.createInstrumentGroups(partList);
+        partInst = this.getPartsOfPartList(partInst, instrumentDict);
         this.completeNumberOfStaves = this.getCompleteNumberOfStavesFromXml(partInst);
         if (partInst.length !== 0) {
             this.repetitionInstructionReader.MusicSheet = this.musicSheet;
@@ -391,6 +417,47 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                 counter++;
             }
         }
+    }
+
+    /**
+     * Returns the parts that can be read: those whose id is the id of a score-part of the part-list, which gives a part its
+     * instrument (name, group, sounds). Another part is skipped, with a warning and an entry in the sheet's errors: the
+     * other parts are still shown.
+     * Throws if a score-part of the part-list has no part: the sheet's instruments are the score-parts, and one without
+     * staves can't be laid out. The message names the skipped parts too, e.g. for a part id with a typo.
+     * @param instrumentDict the instruments of the part-list by their score-part's id
+     */
+    private getPartsOfPartList(partInst: IXmlElement[], instrumentDict: { [_: string]: Instrument }): IXmlElement[] {
+        const isScorePartId: (id: string) => boolean = (id: string): boolean => {
+            return id !== undefined && Object.prototype.hasOwnProperty.call(instrumentDict, id); // (not "toString" etc.)
+        };
+        const parts: IXmlElement[] = [];
+        const skippedParts: string[] = [];
+        const readIds: { [_: string]: boolean } = {};
+        for (const part of partInst) {
+            const id: string = part.attribute("id")?.value;
+            if (isScorePartId(id)) {
+                parts.push(part);
+                readIds[id] = true;
+            } else {
+                skippedParts.push(id === undefined ? "a part without an id" : `the part "${id}"`);
+            }
+        }
+        const skippedText: string = skippedParts.join(", ");
+        const scorePartsWithoutPart: string[] = Object.keys(instrumentDict).filter((id: string): boolean => !readIds[id]);
+        if (scorePartsWithoutPart.length > 0) {
+            let errorMsg: string = `No part for the score-part "${scorePartsWithoutPart.join('", "')}" of the part-list`;
+            if (skippedParts.length > 0) {
+                errorMsg += `, and no score-part in the part-list for ${skippedText}`;
+            }
+            throw new MusicSheetReadingException(errorMsg);
+        }
+        if (skippedParts.length > 0) {
+            const errorMsg: string = `Skipped ${skippedText}: the part-list has no score-part for it.`;
+            log.warn("[OSMD] MusicSheetReader: " + errorMsg);
+            this.musicSheet.SheetErrors.push(errorMsg);
+        }
+        return parts;
     }
 
     /**
@@ -549,7 +616,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             const instrumentsDuration: Fraction = instrumentsDurations[i];
             if (
                 (this.currentMeasure.ImplicitMeasure && instrumentsDuration !== maxInstrumentDuration) ||
-                !Fraction.Equal(instrumentsDuration, activeRhythm) &&
+                !instrumentsDuration.Equals(activeRhythm) && // by value: a full 4/4 measure is 1 0/1, not 4/4
                 !this.allInstrumentsHaveSameDuration(instrumentsDurations, maxInstrumentDuration)
             ) {
                 const firstStaffIndexOfInstrument: number = this.musicSheet.getGlobalStaffIndexOfFirstStaff(this.musicSheet.Instruments[i]);
@@ -838,10 +905,6 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
     }
 
     private readTitleAndComposerFromCredits(root: IXmlElement): void {
-        if (this.rules.SheetComposerSubtitleUseLegacyParsing) {
-            this.readTitleAndComposerFromCreditsLegacy(root);
-            return;
-        }
         // 0 if the score has no <defaults>, no <top-system-distance>, or no <page-height> in <page-layout>
         const systemYCoordinates: number = this.computeSystemYCoordinates(root);
         // let largestTitleCreditSize: number = 1;
@@ -880,6 +943,10 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                         this.musicSheet.Copyright = new Label(this.trimString(creditText), TextAlignmentEnum.CenterBottom, undefined, true);
                         this.musicSheet.Copyright.language = creditLanguage;
                     }
+                    continue;
+                }
+                if (this.readCreditOutsideOfHeadings(credit)) {
+                    // its alignment would make it a subtitle (centered, after the title) or composer line (right-aligned)
                     continue;
                 }
                 let creditChildren: IXmlElement[] = undefined;
@@ -996,6 +1063,31 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         }
     }
 
+    /** Whether a credit states that it isn't a heading (title, subtitle, composer, lyricist), so that its position and
+     * alignment don't make it one: a credit of the type "rights" or "page number", or one that repeats the copyright
+     * (<identification><rights>), like the copyright line at the bottom of the first page that most programs export.
+     * A "rights" credit becomes the copyright if the sheet has none yet.
+     */
+    private readCreditOutsideOfHeadings(credit: IXmlElement): boolean {
+        const [creditType, creditText, creditLanguage] = this.getCreditTypeTextAndLanguage(credit);
+        if (creditType === "page number") {
+            return true;
+        }
+        if (creditType === "rights") {
+            if (!this.musicSheet.Copyright) {
+                this.musicSheet.Copyright = new Label(this.trimString(creditText), TextAlignmentEnum.CenterBottom, undefined, true);
+                this.musicSheet.Copyright.language = creditLanguage;
+            }
+            return true;
+        }
+        if (creditText === undefined || !this.musicSheet.Copyright) {
+            return false;
+        }
+        // the same words, however their whitespace was exported
+        const normalize: (text: string) => string = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+        return normalize(creditText) === normalize(this.musicSheet.Copyright.text);
+    }
+
     /** Joins <credit-words> in document order and returns a type only for exactly one <credit-type>, and the xml:lang of
      * the first <credit-words>. Untyped and multi-type credits retain their text without a type.
      */
@@ -1006,99 +1098,6 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             return [];
         }
         return [creditTypes.length === 1 ? creditTypes[0].value : undefined, text, credit.element("credit-words").attribute("xml:lang")?.value];
-    }
-
-    /** @deprecated Old OSMD < 1.8.6 way of parsing composer + subtitles,
-     * ignores multiline composer + subtitles, uses XML identification tags instead.
-     * Will probably be removed soon.
-     */
-    private readTitleAndComposerFromCreditsLegacy(root: IXmlElement): void {
-        const systemYCoordinates: number = this.computeSystemYCoordinates(root);
-        if (systemYCoordinates === 0) {
-            return;
-        }
-        let largestTitleCreditSize: number = 1;
-        let finalTitle: string = undefined;
-        let largestCreditYInfo: number = 0;
-        let finalSubtitle: string = undefined;
-        let possibleTitle: string = undefined;
-        const creditElements: IXmlElement[] = root.elements("credit");
-        for (let idx: number = 0, len: number = creditElements.length; idx < len; ++idx) {
-            const credit: IXmlElement = creditElements[idx];
-            if (!credit.attribute("page")) {
-                return;
-            }
-            if (credit.attribute("page").value === "1") {
-                let creditChild: IXmlElement = undefined;
-                if (credit) {
-                    creditChild = credit.element("credit-words");
-                    if (!creditChild.attribute("justify")) {
-                        break;
-                    }
-                    const creditJustify: string = creditChild.attribute("justify")?.value;
-                    const creditY: string = creditChild.attribute("default-y")?.value;
-
-                    const creditYGiven: boolean = creditY !== undefined && creditY !== null;
-                    const creditYInfo: number = creditYGiven ? parseFloat(creditY) : Number.MIN_VALUE;
-                    let isSubtitle: boolean = false;
-                    const typeChild: IXmlElement = credit.element("credit-type");
-                    if (typeChild?.value === "subtitle") {
-                        isSubtitle = true;
-                    }
-                    if ((creditYGiven && creditYInfo > systemYCoordinates) || isSubtitle) {
-                        if (!this.musicSheet.Title && !isSubtitle) {
-                            const creditSize: string = creditChild.attribute("font-size")?.value;
-                            if (creditSize) {
-                                const titleCreditSizeInt: number = parseFloat(creditSize);
-                                if (largestTitleCreditSize < titleCreditSizeInt) {
-                                    largestTitleCreditSize = titleCreditSizeInt;
-                                    finalTitle = creditChild.value;
-                                }
-                            }
-                        }
-                        if (!this.musicSheet.Subtitle) {
-                            if (creditJustify !== "right" && creditJustify !== "left" || isSubtitle) {
-                                if (largestCreditYInfo < creditYInfo) {
-                                    largestCreditYInfo = creditYInfo;
-                                    if (possibleTitle) {
-                                        finalSubtitle = possibleTitle;
-                                        possibleTitle = creditChild.value;
-                                    } else {
-                                        possibleTitle = creditChild.value;
-                                    }
-                                } else {
-                                    if (finalSubtitle) {
-                                        finalSubtitle += "\n" + creditChild.value;
-                                    } else {
-                                        finalSubtitle = creditChild.value;
-                                    }
-                                }
-                            }
-                        }
-                        switch (creditJustify) {
-                            case "right":
-                                if (!this.musicSheet.Composer) {
-                                    this.musicSheet.Composer = new Label(this.trimString(creditChild.value));
-                                }
-                                break;
-                            case "left":
-                                if (!this.musicSheet.Lyricist) {
-                                    this.musicSheet.Lyricist = new Label(this.trimString(creditChild.value));
-                                }
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-                }
-            }
-        }
-        if (!this.musicSheet.Title && finalTitle) {
-            this.musicSheet.Title = new Label(this.trimString(finalTitle));
-        }
-        if (!this.musicSheet.Subtitle && finalSubtitle) {
-            this.musicSheet.Subtitle = new Label(this.trimString(finalSubtitle));
-        }
     }
 
     private computeSystemYCoordinates(root: IXmlElement): number {
@@ -1201,6 +1200,17 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         const entryArray: IXmlElement[] = this.orderPartGroupsByNesting(entryList);
         // The reader builds a nesting tree; crossing numbered groups cannot be named reliably.
         const canAssignGroupNames: boolean = this.groupNumbersAreProperlyNested(entryArray);
+        // Two score-parts with the same id: a part with that id could belong to either, and the second instrument would have no staves.
+        const scorePartIds: { [_: string]: boolean } = {};
+        for (const entry of entryArray) {
+            const scorePartId: string = entry.name === "score-part" ? entry.attribute("id")?.value : undefined;
+            if (scorePartId !== undefined) {
+                if (Object.prototype.hasOwnProperty.call(scorePartIds, scorePartId)) {
+                    throw new MusicSheetReadingException(`The part-list has more than one score-part with the id "${scorePartId}"`);
+                }
+                scorePartIds[scorePartId] = true;
+            }
+        }
         try {
             for (let idx: number = 0, len: number = entryArray.length; idx < len; ++idx) {
                 const node: IXmlElement = entryArray[idx];
@@ -1215,14 +1225,16 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                     for (let idx2: number = 0, len2: number = partElements.length; idx2 < len2; ++idx2) {
                         const partElement: IXmlElement = partElements[idx2];
                         try {
+                            // trimmed like the title: a line break at the end (e.g. "Voice" with its closing tag on the next
+                            //   line) gave the label an empty second line, which drew the text above its staff's center
                             if (partElement.name === "part-name") {
-                                instrument.Name = partElement.value;
+                                instrument.Name = this.trimString(partElement.value);
                                 if (partElement.attribute("print-object") &&
                                    partElement.attribute("print-object").value === "no") {
                                     instrument.NameLabel.print = false;
                                 }
                             } else if (partElement.name === "part-abbreviation") {
-                                instrument.PartAbbreviation = partElement.value;
+                                instrument.PartAbbreviation = this.trimString(partElement.value);
                                 if (partElement.attribute("print-object")?.value === "no") {
                                     instrument.PartAbbreviationPrintObject = false;
                                 }
@@ -1313,6 +1325,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                         if (groupAbbreviation) {
                             iG.Abbreviation = groupAbbreviation.value;
                         }
+                        iG.GroupSymbol = this.readGroupSymbol(node.element("group-symbol"));
                         iG.PrintName = canAssignGroupNames;
                         iG.PrintAbbreviation = canAssignGroupNames;
                         const nameDisplay: IXmlElement = node.element("group-name-display");
@@ -1332,24 +1345,15 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                     } else {
                         if ((node.name === "part-group") && (node.attribute("type").value === "stop")) {
                             if (currentGroup) {
-                                const hasMultipleParts: boolean = this.countInstrumentsInGroup(currentGroup) > 1;
-                                currentGroup.PrintName = currentGroup.PrintName && hasMultipleParts;
-                                currentGroup.PrintAbbreviation = currentGroup.PrintAbbreviation && hasMultipleParts;
-                                if (currentGroup.InstrumentalGroups.length === 1) {
-                                    const instr: InstrumentalGroup = currentGroup.InstrumentalGroups[0];
-                                    if (currentGroup.Parent) {
-                                        currentGroup.Parent.InstrumentalGroups.push(instr);
-                                        this._removeFromArray(currentGroup.Parent.InstrumentalGroups, currentGroup);
-                                    } else {
-                                        this.musicSheet.InstrumentalGroups.push(instr);
-                                        this._removeFromArray(this.musicSheet.InstrumentalGroups, currentGroup);
-                                    }
-                                }
-                                currentGroup = currentGroup.Parent;
+                                currentGroup = this.closePartGroup(currentGroup);
                             }
                         }
                     }
                 }
+            }
+            // a part-group that is never stopped (e.g. MuseScore 3's brace before a piano part) ends with the part-list
+            while (currentGroup) {
+                currentGroup = this.closePartGroup(currentGroup);
             }
         } catch (e) {
             const errorMsg: string = ITextTranslation.translateText(
@@ -1359,6 +1363,45 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
         }
 
         return instrumentDict;
+    }
+
+    /**
+     * Ends a part-group, at its stop or at the end of the part-list: a group around a single part or group is left out, except
+     * around a group with another symbol, e.g. a bracket around a square bracket of the same parts (Gould's secondary bracket)
+     * keeps both.
+     * @returns the group's parent, the group now open
+     */
+    private closePartGroup(group: InstrumentalGroup): InstrumentalGroup {
+        const hasMultipleParts: boolean = this.countInstrumentsInGroup(group) > 1;
+        group.PrintName = group.PrintName && hasMultipleParts;
+        group.PrintAbbreviation = group.PrintAbbreviation && hasMultipleParts;
+        const onlyChild: InstrumentalGroup = group.InstrumentalGroups.length === 1 ? group.InstrumentalGroups[0] : undefined;
+        if (onlyChild && (onlyChild instanceof Instrument || onlyChild.GroupSymbol === group.GroupSymbol)) {
+            if (group.Parent) {
+                group.Parent.InstrumentalGroups.push(onlyChild);
+                this._removeFromArray(group.Parent.InstrumentalGroups, group);
+            } else {
+                this.musicSheet.InstrumentalGroups.push(onlyChild);
+                this._removeFromArray(this.musicSheet.InstrumentalGroups, group);
+            }
+        }
+        return group.Parent;
+    }
+
+    /** The MusicXML group-symbol of a part-group: none if not given (MusicXML 4.0, group-symbol), and for an unknown value. */
+    private readGroupSymbol(groupSymbol: IXmlElement): GroupSymbol {
+        switch (groupSymbol?.value?.trim()) {
+            case "brace":
+                return GroupSymbol.Brace;
+            case "line":
+                return GroupSymbol.Line;
+            case "bracket":
+                return GroupSymbol.Bracket;
+            case "square":
+                return GroupSymbol.Square;
+            default:
+                return GroupSymbol.None;
+        }
     }
 
     private countInstrumentsInGroup(group: InstrumentalGroup): number {
@@ -1460,7 +1503,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
                     if (!stavesNode) {
                         num++;
                     } else {
-                        num += parseInt(stavesNode.value, 10);
+                        num += this.readNumberOfStaves(stavesNode, partNode);
                     }
                 }
             }
@@ -1491,7 +1534,7 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             if (!attributes || !staves) {
                 num = 1;
             } else {
-                num = parseInt(staves.value, 10);
+                num = this.readNumberOfStaves(staves, partNode);
             }
         }
         if (isNaN(num) || num <= 0) {
@@ -1501,6 +1544,25 @@ export class MusicSheetReader /*implements IMusicSheetReader*/ {
             throw new MusicSheetReadingException(errorMsg);
         }
         return num;
+    }
+
+    /**
+     * The number of staves that a part's `<staves>` element gives, NaN if it isn't a number.
+     * Throws for more than EngravingRules.MaxStavesPerPart, so that loading fails with an error that names the part and the value:
+     * every staff is created for every measure, so `<staves>3000000</staves>` used up all memory.
+     */
+    private readNumberOfStaves(stavesNode: IXmlElement, partNode: IXmlElement): number {
+        const numberOfStaves: number = parseInt(stavesNode.value, 10);
+        if (numberOfStaves > this.rules.MaxStavesPerPart) {
+            const errorMsg: string = ITextTranslation.translateText(
+                "ReaderErrorMessages/StaffError", "Invalid number of staves."
+            );
+            throw new MusicSheetReadingException(
+                `${errorMsg} Part "${partNode.attribute("id")?.value}" has <staves>${stavesNode.value.trim().slice(0, 20)}</staves>, ` +
+                `the most that is read is ${this.rules.MaxStavesPerPart} staves per part.`
+            );
+        }
+        return numberOfStaves;
     }
 
 }

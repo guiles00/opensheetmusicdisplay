@@ -1,7 +1,7 @@
 import { Pitch, NoteEnum } from "../Common/DataObjects/Pitch";
 import { Fraction } from "../Common/DataObjects/Fraction";
 import { MusicSheet } from "../MusicalScore/MusicSheet";
-import { MusicSheetCalculator } from "../MusicalScore/Graphical/MusicSheetCalculator";
+import { ITransposeCalculator } from "../MusicalScore/Interfaces/ITransposeCalculator";
 import { OctaveShiftParams } from "../MusicalScore/Graphical/OctaveShiftParams";
 import { Note } from "../MusicalScore/VoiceData/Note";
 import { SourceMeasure } from "../MusicalScore/VoiceData/SourceMeasure";
@@ -69,7 +69,8 @@ export function countLedgerLineNotesForTransposition(sheet: MusicSheet | undefin
                     clef,
                     key,
                     transposeHalftones,
-                    octaveShiftValue
+                    octaveShiftValue,
+                    sheet.Rules.TransposeCalculator
                 );
             }
 
@@ -252,7 +253,8 @@ function countLedgerLineNotesInStaffEntry(
     clef: ClefInstruction,
     key: KeyInstruction,
     transposeHalftones: number,
-    octaveShiftValue: OctaveEnum
+    octaveShiftValue: OctaveEnum,
+    transposeCalculator: ITransposeCalculator
 ): number {
     let count: number = 0;
 
@@ -262,7 +264,7 @@ function countLedgerLineNotesInStaffEntry(
                 continue;
             }
 
-            const pitch: Pitch = getLedgerLineDrawPitch(note.Pitch, key, transposeHalftones, octaveShiftValue);
+            const pitch: Pitch = getLedgerLineDrawPitch(note.Pitch, key, transposeHalftones, octaveShiftValue, transposeCalculator);
             if (pitchExceedsLedgerLineRange(pitch, clef)) {
                 count++;
             }
@@ -281,11 +283,12 @@ function getLedgerLineDrawPitch(
     pitch: Pitch,
     key: KeyInstruction,
     transposeHalftones: number,
-    octaveShift: OctaveEnum
+    octaveShift: OctaveEnum,
+    transposeCalculator: ITransposeCalculator
 ): Pitch {
     let p: Pitch = pitch;
-    if (transposeHalftones !== 0 && MusicSheetCalculator.transposeCalculator) {
-        p = MusicSheetCalculator.transposeCalculator.transposePitch(pitch, key, transposeHalftones);
+    if (transposeHalftones !== 0 && transposeCalculator) {
+        p = transposeCalculator.transposePitch(pitch, key, transposeHalftones);
     }
     if (!p) {
         return p;

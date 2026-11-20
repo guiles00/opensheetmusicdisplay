@@ -1,1 +1,2 @@
-export { MidiExporter, MidiExportOptions } from "./MidiExporter";
+export { MidiExporter } from "./MidiExporter";
+export type { MidiExportOptions } from "./MidiExporter";

@@ -4,16 +4,23 @@ import { GraphicalMeasure } from "./GraphicalMeasure";
 import { AbstractGraphicalExpression } from "./AbstractGraphicalExpression";
 import { SkyBottomLineCalculator } from "./SkyBottomLineCalculator";
 import { PlacementEnum } from "../VoiceData/Expressions/AbstractExpression";
-import log from "loglevel";
+import { log } from "../../Common/Logging";
 
 export class GraphicalInstantaneousDynamicExpression extends AbstractGraphicalExpression {
     protected mInstantaneousDynamicExpression: InstantaneousDynamicExpression;
     protected mMeasure: GraphicalMeasure;
+    /** Whether words of the same time are drawn on this dynamic's line, before or after it
+     *  (see MusicSheetCalculator.placeWordsBesideSameTimeDynamic()). */
+    public HasWordsBeside: boolean = false;
 
     constructor(instantaneousDynamic: InstantaneousDynamicExpression, staffLine: StaffLine, measure: GraphicalMeasure) {
         super(staffLine, instantaneousDynamic, measure.parentSourceMeasure);
         this.mInstantaneousDynamicExpression = instantaneousDynamic;
         this.mMeasure = measure;
+    }
+
+    public get InstantaneousDynamic(): InstantaneousDynamicExpression {
+        return this.mInstantaneousDynamicExpression;
     }
 
     public updateSkyBottomLine(): void {

@@ -1,4 +1,4 @@
-import { expect } from "chai";
+import { expect } from "vitest";
 import { IXmlElement } from "../../../../src/Common/FileIO/Xml";
 import { Instrument } from "../../../../src/MusicalScore/Instrument";
 import { MusicSheet } from "../../../../src/MusicalScore/MusicSheet";
@@ -16,9 +16,10 @@ import { RepetitionInstructionEnum } from "../../../../src/MusicalScore/VoiceDat
 import { Fraction } from "../../../../src/Common/DataObjects/Fraction";
 import { DynamicsContainer } from "../../../../src/MusicalScore/VoiceData/HelperObjects/DynamicsContainer";
 import { MusicPartManagerIterator } from "../../../../src/MusicalScore/MusicParts/MusicPartManagerIterator";
+import { Pedal } from "../../../../src/MusicalScore/VoiceData/Expressions/ContinuousExpressions/Pedal";
 
 describe("ExpressionReader", () => {
-    /** Reads a test/data sample (preprocessed by karma) into a MusicSheet, optionally with custom rules. */
+    /** Reads a test/data sample into a MusicSheet, optionally with custom rules. */
     function readSheet(path: string, rules: EngravingRules = new EngravingRules()): MusicSheet {
         const doc: Document = ((window as any).__xml__)[path];
         expect(doc, "sample file is loaded: " + path).to.not.equal(undefined);
@@ -41,7 +42,7 @@ describe("ExpressionReader", () => {
         const path: string = "test/data/test_combined_dynamics_1705.musicxml";
         let dynamics: InstantaneousDynamicExpression[];
 
-        before((): void => {
+        beforeAll((): void => {
             dynamics = collectDynamics(readSheet(path));
         });
 
@@ -118,7 +119,7 @@ describe("ExpressionReader", () => {
     describe("MusicXML 4.0 dynamics pf, sfzp and n", () => {
         let dynamics: InstantaneousDynamicExpression[];
 
-        before((): void => {
+        beforeAll((): void => {
             dynamics = collectDynamics(readSheet("test/data/test_dynamics_musicxml4_n_pf_sfzp.musicxml"));
         });
 
@@ -130,8 +131,8 @@ describe("ExpressionReader", () => {
         });
 
         it("gives them a playback volume", () => {
-            const mp: number = InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.getValue(DynamicEnum.mp);
-            const f: number = InstantaneousDynamicExpression.dynamicToRelativeVolumeDict.getValue(DynamicEnum.f);
+            const mp: number = new EngravingRules().DynamicToRelativeVolumeDict.getValue(DynamicEnum.mp);
+            const f: number = new EngravingRules().DynamicToRelativeVolumeDict.getValue(DynamicEnum.f);
             expect(dynamics[0].Volume, "pf (poco forte) lies between mp and f").to.be.within(mp, f);
             expect(dynamics[1].Volume, "sfzp like the other sforzando marks").to.equal(0.5);
             expect(dynamics[2].Volume, "n (niente) is silence").to.equal(0);
@@ -141,7 +142,7 @@ describe("ExpressionReader", () => {
     describe("dynamics after words or a wedge in the same direction", () => {
         let dynamics: InstantaneousDynamicExpression[];
 
-        before((): void => {
+        beforeAll((): void => {
             dynamics = collectDynamics(readSheet("test/data/test_direction_dynamics_after_words_and_wedge.musicxml"));
         });
 
@@ -185,7 +186,7 @@ describe("ExpressionReader", () => {
         let sheet: MusicSheet;
         let wedges: ContinuousDynamicExpression[];
 
-        before((): void => {
+        beforeAll((): void => {
             sheet = readSheet("test/data/test_direction_several_direction_types.musicxml");
             wedges = sheet.SourceMeasures.flatMap((measure): ContinuousDynamicExpression[] =>
                 measure.StaffLinkedExpressions.flatMap((staffExpressions: MultiExpression[]): ContinuousDynamicExpression[] =>
@@ -304,5 +305,105 @@ describe("ExpressionReader", () => {
                 expression.EntriesList.map((entry: MultiExpressionEntry): string => entry.label));
         expect(words(0), "measure 1").to.deep.equal(["(\u{1D15E})"]);
         expect(words(1), "measure 2").to.deep.equal(["Hold (\u{1D15D}),\nthen play (\u2669) Keep going", "cresc.\u266A"]);
+    });
+
+    describe("words of a direction with <sound dynamics>", () => {
+        const path: string = "test/data/test_direction_words_with_sound_dynamics.musicxml";
+        let sheet: MusicSheet;
+
+        beforeAll((): void => {
+            sheet = readSheet(path);
+        });
+
+        /** The texts of the expressions of measure [measureIndex] at staff [staffIndex] of [musicSheet] (by default the
+         *  sample's only staff): the marking of a dynamic, the label of words. */
+        function labels(measureIndex: number, staffIndex: number = 0, musicSheet: MusicSheet = sheet): string[] {
+            return musicSheet.SourceMeasures[measureIndex].StaffLinkedExpressions[staffIndex].flatMap((expression: MultiExpression): string[] =>
+                expression.EntriesList.map((entry: MultiExpressionEntry): string =>
+                    entry.expression instanceof InstantaneousDynamicExpression ? entry.expression.DynamicExpression : entry.label));
+        }
+
+        it("reads the words next to a dynamic, before or after it, without a dynamic, and words that are a dynamic", () => {
+            expect(labels(1), "leggero e pp").to.have.members(["leggero e", "pp"]);
+            expect(labels(2), "p sempre").to.have.members(["p", "sempre"]);
+            expect(labels(3), "dolce").to.deep.equal(["dolce"]);
+            expect(labels(4), "p as words").to.deep.equal(["p"]);
+            expect(labels(5), "cresc. as words").to.deep.equal(["cresc."]);
+            const crescendos: ContinuousDynamicExpression[] = sheet.SourceMeasures[5].StaffLinkedExpressions[0]
+                .map((expression: MultiExpression): ContinuousDynamicExpression => expression.StartingContinuousDynamic)
+                .filter((expression: ContinuousDynamicExpression): boolean => expression !== undefined);
+            expect(crescendos.map((expression: ContinuousDynamicExpression): ContDynamicEnum => expression.DynamicType))
+                .to.deep.equal([ContDynamicEnum.crescendo]);
+        });
+
+        it("reads the \"piu\" before the f in CharlesGounod_Meditation.xml m. 33 (violin, cello, piano) and m. 66 (piano)", () => {
+            const gounod: MusicSheet = readSheet("test/data/CharlesGounod_Meditation.xml");
+            // (the direction also has a <words> with only a no-break space, read as an empty expression)
+            // staff indices: violin 0, cello 1, cello ad lib. 2, organ ad lib. 3-4, piano 5-6
+            expect(labels(32, 0, gounod), "m. 33, violin").to.include.members(["piu", "f"]);
+            expect(labels(32, 1, gounod), "m. 33, cello").to.include.members(["piu", "f"]);
+            expect(labels(32, 5, gounod), "m. 33, piano").to.include.members(["piu", "f"]);
+            expect(labels(65, 5, gounod), "m. 66, piano").to.include.members(["piu", "f"]);
+            expect(labels(65, 0, gounod), "m. 66, violin: no dynamic there").to.deep.equal(["tutta forza."]);
+        });
+
+        it("still reads the words of a tempo direction as the tempo, and the dynamics at their notes with their sound dynamics", () => {
+            expect(sheet.SourceMeasures[6].TempoExpressions.flatMap((tempo: MultiTempoExpression): string[] =>
+                tempo.EntriesList.map((entry: TempoExpressionEntry): string => entry.label))).to.deep.equal(["Allegro"]);
+            const dynamics: InstantaneousDynamicExpression[] = collectDynamics(sheet);
+            expect(dynamics.map((dynamic: InstantaneousDynamicExpression): string => dynamic.DynamicExpression))
+                .to.deep.equal(["mf", "pp", "p", "f"]);
+            expect(dynamics.map((dynamic: InstantaneousDynamicExpression): number => dynamic.ParentMultiExpression.AbsolutePlaybackTimestamp.RealValue),
+                   "the first notes of m. 1, 2, 3 and 8").to.deep.equal([0, 1, 2, 7]);
+            expect(dynamics.map((dynamic: InstantaneousDynamicExpression): number => dynamic.SoundDynamic))
+                .to.deep.equal([89, 31, 54, 106]);
+        });
+    });
+
+    it("reads the line and the sign of a pedal for each combination of its line and sign attributes, also both", () => {
+        const sheet: MusicSheet = readSheet("test/data/test_pedal_line_and_sign.musicxml");
+        // "m<measure>: sign" (the Ped. and * signs), "line", or "sign + line" (the Ped. sign, then the line), by where a pedal starts
+        const pedals: string[] = sheet.SourceMeasures.flatMap((measure): string[] => measure.StaffLinkedExpressions[0]
+            .map((expression: MultiExpression): Pedal => expression.PedalStart)
+            .filter((pedal: Pedal): boolean => pedal !== undefined)
+            .map((pedal: Pedal): string => `m${measure.MeasureNumber}: ` +
+                [pedal.IsSign ? "sign" : undefined, pedal.IsLine ? "line" : undefined].filter(part => part !== undefined).join(" + ") +
+                (pedal.ChangeBegin ? " (change)" : "")));
+        // MusicXML: the sign is "yes" by default with line="no", "no" with line="yes"
+        expect(pedals).to.deep.equal([
+            "m1: line", // no line or sign attribute
+            "m2: sign", // sign="yes"
+            "m3: line", // sign="no"
+            "m4: line", // line="yes"
+            "m5: sign + line", // line="yes" sign="yes" (was read as a line only)
+            "m6: line", // line="yes" sign="no"
+            "m7: sign", // line="no"
+            "m8: sign", // line="no" sign="yes"
+            "m9: sign + line", // line="yes" sign="yes", into the next system
+            "m10: line (change)", // its change, line="yes": a line goes on, no Ped. sign
+            "m11: sign + line",
+            "m11: sign + line (change)", // released and pressed again at one note (a stop and a start), with the Ped. sign
+        ]);
+    });
+
+    it("reads a pedal of type \"resume\" as a line without the start hook, and \"discontinue\" as its end without the end hook", () => {
+        const sheet: MusicSheet = readSheet("test/data/test_pedal_resume_discontinue.musicxml");
+        /** "m<measure>.<quarter>" of a pedal's start or end */
+        const at: (expression: MultiExpression) => string = expression =>
+            `m${expression.SourceMeasureParent.MeasureNumber}.${expression.Timestamp.RealValue * 4 + 1}`;
+        // "<start>-<end>: line" or "sign + line" (the Ped. sign, then the line), and the hooks it goes without
+        const pedals: string[] = sheet.SourceMeasures.flatMap((measure): string[] => measure.StaffLinkedExpressions[0]
+            .map((expression: MultiExpression): Pedal => expression.PedalStart)
+            .filter((pedal: Pedal): boolean => pedal !== undefined)
+            .map((pedal: Pedal): string => `${at(pedal.ParentStartMultiExpression)}-${at(pedal.ParentEndMultiExpression)}: ` +
+                (pedal.IsSign ? "sign + " : "") + (pedal.IsLine ? "line" : "") +
+                (pedal.BeginsWithoutHook ? ", no start hook" : "") + (pedal.EndsWithoutHook ? ", no end hook" : "")));
+        // (both types were ignored: no pedal started with resume, and a pedal ended with discontinue went on)
+        expect(pedals).to.deep.equal([
+            "m1.1-m1.4: sign + line, no start hook", // resume line="yes" sign="yes" (MuseScore 4.2-4.7.1's Ped. + line), stop
+            "m2.1-m2.4: line, no start hook", // resume, stop
+            "m3.1-m3.4: line, no end hook", // start, discontinue
+            "m4.1-m5.4: line, no start hook, no end hook", // resume, into the next system, discontinue
+        ]);
     });
 });

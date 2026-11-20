@@ -60,7 +60,7 @@ export class TransposeCalculator implements ITransposeCalculator {
                         transposedHalfTone += 12;
                         octaveChange--;
                     }
-                    transposedFundamentalNote = TransposeCalculator.noteEnums[noteIndex];
+                transposedFundamentalNote = TransposeCalculator.noteEnums[noteIndex];
                     transposedAccidental = Pitch.AccidentalFromHalfTones(transposedHalfTone - <number>transposedFundamentalNote);
                     transposedOctave = <number>(pitch.Octave + octaveChange);
                     return new Pitch(transposedFundamentalNote, transposedOctave, transposedAccidental);
@@ -133,9 +133,9 @@ export class TransposeCalculator implements ITransposeCalculator {
 
                     if (hasOverride) {
                         preferSharps = overrideValue;
-                    } else if (hasSharpAccidental || hasFlatAccidental) {
+                } else if (hasSharpAccidental || hasFlatAccidental) {
                         // Respect original accidental if present
-                        preferSharps = hasSharpAccidental;
+                    preferSharps = hasSharpAccidental;
                     } else {
                         // Default based on key signature
                         if (key > 0) {
